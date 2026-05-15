@@ -1,0 +1,72 @@
+# Virtual environments
+.venv/
+__pycache__/
+*.py[cod]
+
+# Binary executables
+*.exe
+
+# Large model files
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+
+# Media outputs
+*.mp4
+*.webm
+*.mov
+*.mkv
+*.npy
+
+# Archives
+*.zip
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Backup git dirs
+.git_backup/
+
+# Gradio cache
+.gradio/
+
+# Wan2GP specific
+Wan2GP/.git/
+Wan2GP/.venv/
+Wan2GP/__pycache__/
+Wan2GP/ckpts/
+Wan2GP/loras/
+Wan2GP/loras_i2v/
+Wan2GP/outputs/
+Wan2GP/outputs2/
+Wan2GP/gradio_outputs/
+Wan2GP/finetunes/
+Wan2GP/settings/
+Wan2GP/storage/
+Wan2GP/samples/
+Wan2GP/cache/
+Wan2GP/google/
+Wan2GP/ffmpeg_bins/
+Wan2GP/wgp_config.json
+Wan2GP/plugins_local.json
+Wan2GP/loras_url_cache.json
+Wan2GP/loras_metadata/
+Wan2GP/.gradio/
+Wan2GP/*.log
+Wan2GP/*.zip
+Wan2GP/*.jpg
+Wan2GP/*.jpeg
+Wan2GP/*.backup
+Wan2GP/*.pkl
+Wan2GP/*.html
+Wan2GP/*.pdf
+Wan2GP/*.whl
+
+# API spec (large file)
+api_spec.json

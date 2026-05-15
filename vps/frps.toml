@@ -1,0 +1,13 @@
+bindPort = 7000
+vhostHTTPPort = 7860
+# vhostHTTPSPort = 7861 # Optional for HTTPS later
+
+# Auth token - KEEPS YOUR TUNNEL SECURE
+auth.method = "token"
+auth.token = "wan2gp-secret-token-123" 
+
+# Dashboard (Optional, for monitoring)
+webServer.addr = "0.0.0.0"
+webServer.port = 7500
+webServer.user = "admin"
+webServer.password = "admin123"

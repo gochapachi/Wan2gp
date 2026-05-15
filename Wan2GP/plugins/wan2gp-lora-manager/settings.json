@@ -1,0 +1,14 @@
+{
+    "sort": "Highest Rated",
+    "period": "Week",
+    "nsfw": true,
+    "types": [
+        "LORA"
+    ],
+    "base": [
+        "LTXV"
+    ],
+    "api_key": "0ba4e445002df9496639428881b23508",
+    "auto_fetch": true,
+    "preview_mode": "Image Thumbnail (First Frame)"
+}

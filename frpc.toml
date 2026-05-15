@@ -1,0 +1,10 @@
+serverAddr = "wan.gochapachi.com"
+serverPort = 7000
+token = "wan2gp-secret-token-123"
+
+[[proxies]]
+name = "wan2gp"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 7860
+remotePort = 9000
