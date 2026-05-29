@@ -12821,6 +12821,20 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
     image_end = convert_to_pil(image_end)
     image_refs = convert_to_pil(image_refs)
 
+    # Guard: detect image_prompt_type mismatch — if type requires an image but none provided
+    from PIL import Image as _PILImage
+    def _is_pil(v):
+        return isinstance(v, _PILImage.Image)
+
+    if "S" in image_prompt_type and not _is_pil(image_start):
+        print(f"[n8n API] [{request_id}] WARNING: image_prompt_type='{image_prompt_type}' expects image_start but none was received (got {type(image_start).__name__}). Clearing image_prompt_type to avoid broken output.")
+        image_prompt_type = ""
+    if "E" in image_prompt_type and not _is_pil(image_end):
+        print(f"[n8n API] [{request_id}] WARNING: image_prompt_type='{image_prompt_type}' expects image_end but none was received (got {type(image_end).__name__}). Stripping 'E' from image_prompt_type.")
+        image_prompt_type = image_prompt_type.replace("E", "")
+
+    print(f"[n8n API] [{request_id}] Effective image_prompt_type='{image_prompt_type}' | image_start={'PIL Image ' + str(getattr(image_start,'size','')) if _is_pil(image_start) else 'None'} | image_end={'PIL Image ' + str(getattr(image_end,'size','')) if _is_pil(image_end) else 'None'}")
+
     try:
         success = generate_video(
             task=task,
@@ -13449,7 +13463,10 @@ if __name__ == "__main__":
             data = cleaned_data
             # --- END FIX ---
 
+            # Log received keys + image parameter values for debugging
+            image_prompt_type_raw = data.get("image_prompt_type", "")
             print(f"[n8n API] [Call {call_id}] Received request data: {list(data.keys())}")
+            print(f"[n8n API] [Call {call_id}] image_prompt_type='{image_prompt_type_raw}' | image_start='{str(data.get('image_start', 'MISSING'))[:80]}' | image_end='{str(data.get('image_end', 'MISSING'))[:80]}'")
             
             request_id = data.get("request_id")
             use_cache = request_id is not None and len(str(request_id).strip()) > 0
@@ -13519,13 +13536,19 @@ if __name__ == "__main__":
             prompt = data.get("prompt", "")
             if not prompt and "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
                  prompt = data["data"][0] 
-            
+
+            # Accept alternate key names that n8n users sometimes send
+            raw_image_start = data.get("image_start") or data.get("start_image") or data.get("first_frame_url")
+            raw_image_end = data.get("image_end") or data.get("end_image") or data.get("last_frame_url")
+
             image_refs = await process_n8n_file(data.get("image_refs"))
             video_source = await process_n8n_file(data.get("video_source"))
-            image_start = await process_n8n_file(data.get("image_start"))
-            image_end = await process_n8n_file(data.get("image_end"))
+            image_start = await process_n8n_file(raw_image_start)
+            image_end = await process_n8n_file(raw_image_end)
             audio_guide = await process_n8n_file(data.get("audio_guide"))
             audio_guide2 = await process_n8n_file(data.get("audio_guide2"))
+
+            print(f"[n8n API] [Call {call_id}] After file processing: image_start={'<PIL/path>' if image_start else 'None'} | image_end={'<PIL/path>' if image_end else 'None'}")
 
             dummy_state = {} 
             from fastapi.concurrency import run_in_threadpool
