@@ -12792,6 +12792,35 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
 
     output_filename = "" 
 
+    # Convert image path/URL strings to PIL Images (generate_video expects PIL objects)
+    def convert_to_pil(val):
+        if val is None:
+            return None
+        if isinstance(val, list):
+            return [convert_to_pil(v) for v in val if v is not None]
+        if isinstance(val, str) and len(val) > 0:
+            try:
+                from PIL import Image
+                import urllib.request, tempfile, os as _os
+                if val.startswith("http://") or val.startswith("https://"):
+                    ext = _os.path.splitext(val.split("?")[0])[1] or ".png"
+                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
+                    urllib.request.urlretrieve(val, tmp.name)
+                    img = Image.open(tmp.name).convert("RGB")
+                    img.load()  # force load before file handle closes
+                    return img
+                elif _os.path.isfile(val):
+                    img = Image.open(val).convert("RGB")
+                    img.load()
+                    return img
+            except Exception as e:
+                print(f"[n8n API] [{request_id}] Warning: could not open image '{val}': {e}")
+        return val  # return as-is if not a string or not convertible
+
+    image_start = convert_to_pil(image_start)
+    image_end = convert_to_pil(image_end)
+    image_refs = convert_to_pil(image_refs)
+
     try:
         success = generate_video(
             task=task,
