@@ -74,12 +74,13 @@ def mock_generate_video(*args, **kwargs):
 
 if __name__ == "__main__":
     try:
-        with patch('importlib.metadata.version', return_value="3.7.5"), patch('os.remove'):
+        with patch('importlib.metadata.version', return_value="3.7.6"), patch('os.remove'):
             spec.loader.exec_module(wgp)
             
         wgp.generate_video = mock_generate_video
         wgp.gr.Error = Exception
-        wgp.models_def = {"Wan2.1-T2V-1.3B": {"image_outputs": False, "audio_only": False}}
+        wgp.models_def = {"Wan2.1-T2V-1.3B": {"image_outputs": False, "audio_only": False, "architecture": "t2v"}}
+        wgp.model_types_handlers = {"t2v": MagicMock()}
         
         print("\n" + "="*50)
         print("   FINAL API GENERATION VERIFICATION REPORT")
@@ -87,7 +88,7 @@ if __name__ == "__main__":
         
         # Test 1: Verify new default URL (should be http://wan.gochapachi.com:9000)
         print("\n>> TEST: Default URL Base Verification")
-        wgp.models_def["test_model"] = {"image_outputs": False, "audio_only": False}
+        wgp.models_def["test_model"] = {"image_outputs": False, "audio_only": False, "architecture": "t2v"}
         url = wgp.n8n_generate_api(prompt="test", model_type="test_model")
         if "http://wan.gochapachi.com:9000" in url:
             print(f"   [SUCCESS] Default URL correct: {url}")
@@ -147,7 +148,7 @@ if __name__ == "__main__":
             print(f"\n>> TEST: {scenario['name']}")
             print(f"   {scenario['description']}")
             # Update models_def to include the specific model for this test
-            wgp.models_def[scenario['kwargs']['model_type']] = {"image_outputs": False, "audio_only": False}
+            wgp.models_def[scenario['kwargs']['model_type']] = {"image_outputs": False, "audio_only": False, "architecture": "t2v"}
             output_url = wgp.n8n_generate_api(**scenario['kwargs'])
             print(f"   [SUCCESS] Parameters successfully routed to engine.")
             print(f"   [RESULT] URL: {output_url}")

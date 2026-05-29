@@ -85,7 +85,7 @@ def mock_generate_video(*args, **kwargs):
 if __name__ == "__main__":
     try:
         # Patch importlib.metadata.version mainly for mmgp check
-        p1 = patch('importlib.metadata.version', return_value="3.7.5")
+        p1 = patch('importlib.metadata.version', return_value="3.7.6")
         # Patch os.remove to avoid deletion of mocked files
         p2 = patch('os.remove')
         
@@ -104,9 +104,11 @@ if __name__ == "__main__":
         wgp.models_def = {
             "Wan2.1-T2V-1.3B": {
                 "image_outputs": False,
-                "audio_only": False
+                "audio_only": False,
+                "architecture": "t2v"
             }
         }
+        wgp.model_types_handlers = {"t2v": MagicMock()}
         
         # Inject mock state
         state = {

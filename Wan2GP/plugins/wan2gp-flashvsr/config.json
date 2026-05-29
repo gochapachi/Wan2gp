@@ -123,7 +123,7 @@
   "default": {
     "model_variant": "tiny",
     "model_version": "FlashVSR-v1.1",
-    "scale_factor": 4,
+    "scale_factor": 2,
     "vram_optimization": {
       "tiled_vae": true,
       "tiled_dit": true,

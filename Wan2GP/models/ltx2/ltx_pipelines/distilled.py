@@ -16,12 +16,15 @@ from ..ltx_core.model.video_vae import decode_video_to_tensor as vae_decode_vide
 from ..ltx_core.text_encoders.gemma import encode_text, postprocess_text_embeddings, resolve_text_connectors
 from ..ltx_core.tools import VideoLatentTools
 from ..ltx_core.types import LatentState, VideoPixelShape
+from shared.prompt_relay import encode_prompt_relay
 from .utils import ModelLedger
 from .utils.args import default_2_stage_distilled_arg_parser
 from .utils.constants import (
     AUDIO_SAMPLE_RATE,
     DEFAULT_NEGATIVE_PROMPT,
+    DISTILLED_8_STEPS_STAGE_2_SIGMA_VALUES,
     DISTILLED_SIGMA_VALUES,
+    LTX23_USE_DISTILLED_8_STEPS_STAGE_2_SIGMAS,
     STAGE_2_DISTILLED_SIGMA_VALUES,
 )
 from .utils.helpers import (
@@ -41,6 +44,7 @@ from .utils.helpers import (
     video_conditionings_by_control_video,
 )
 from .utils.types import PipelineComponents
+from ..editanything import build_editanything_reference_conditioning
 from shared.utils.loras_mutipliers import update_loras_slists
 from shared.utils.self_refiner import create_self_refiner_handler, normalize_self_refiner_plan
 from shared.utils.text_encoder_cache import TextEncoderCache
@@ -180,6 +184,7 @@ class DistilledPipeline:
         num_frames: int,
         frame_rate: float,
         images: list[tuple[str, int, float]],
+        prompt_relay_frame_offset: int = 0,
         negative_prompt: str = DEFAULT_NEGATIVE_PROMPT,
         guiding_images: list[tuple] | None = None,
         guiding_images_stage2: list[tuple] | None = None,
@@ -218,6 +223,8 @@ class DistilledPipeline:
         self_refiner_f_uncertainty: float = 0.1,
         self_refiner_certain_percentage: float = 0.999,
         self_refiner_max_plans: int = 1,
+        editanything_ref_images=None,
+        ltx2_22B_class: bool = False,
     ) -> tuple[Iterator[torch.Tensor], torch.Tensor]:
         assert_resolution(height=height, width=width, is_two_stage=True)
         alt_guidance_scale = 1.0
@@ -275,6 +282,8 @@ class DistilledPipeline:
             audio_context = None if skip_audio else audio_context.to(device=self.device, dtype=dtype)
             contexts = [(video_context, audio_context)]
             NAG_scale = 1.0
+            video_context_mask_builder = None
+            audio_context_mask_builder = None
         else:
             text_encoder = self._get_model("text_encoder")
             if enhance_prompt:
@@ -288,15 +297,37 @@ class DistilledPipeline:
                 video_connector,
                 audio_connector,
             )
-            if float(NAG_scale) > 1.0:
+            encode_fn_with_masks = lambda prompts: postprocess_text_embeddings(
+                encode_text(text_encoder, prompts=prompts),
+                feature_extractor,
+                video_connector,
+                audio_connector,
+                return_attention_masks=True,
+            )
+            relay_conditioning = encode_prompt_relay(prompt, encode_fn_with_masks, self.text_encoder_cache, self.device, num_frames, frame_rate, text_encoder.tokenizer, visible_frame_offset=prompt_relay_frame_offset)
+            if relay_conditioning is not None:
+                video_context = relay_conditioning.video_context
+                audio_context = None if skip_audio else relay_conditioning.audio_context
+                video_context_mask_builder = relay_conditioning.video_mask_builder
+                audio_context_mask_builder = None if skip_audio else relay_conditioning.audio_mask_builder
+                if float(NAG_scale) > 1.0:
+                    context_n = self.text_encoder_cache.encode(encode_fn, [negative_prompt], device=self.device, parallel=True)[0]
+                    contexts = [(video_context, audio_context), context_n]
+                else:
+                    contexts = [(video_context, audio_context)]
+            elif float(NAG_scale) > 1.0:
                 contexts = self.text_encoder_cache.encode(
                     encode_fn,
                     [prompt, negative_prompt],
                     device=self.device,
                     parallel=True,
                 )
+                video_context_mask_builder = None
+                audio_context_mask_builder = None
             else:
                 contexts = self.text_encoder_cache.encode(encode_fn, [prompt], device=self.device, parallel=True)
+                video_context_mask_builder = None
+                audio_context_mask_builder = None
 
             torch.cuda.synchronize()
             del text_encoder
@@ -336,9 +367,26 @@ class DistilledPipeline:
         stage_1_pass_no = 0 if skip_stage_2 else 1
         if interrupt_check is not None and interrupt_check():
             return None, None
+        stage_1_output_shape = VideoPixelShape(
+            batch=1,
+            frames=num_frames,
+            width=width if skip_stage_2 else width // 2,
+            height=height if skip_stage_2 else height // 2,
+            fps=frame_rate,
+        )
         video_encoder = self._get_model("video_encoder")
         transformer = _TransformerBenchWrapper(self._get_model("transformer"), enabled=bench_transformer)
         bind_interrupt_check(transformer, interrupt_check)
+        stage_1_ref_conditionings, stage_1_ref_context, stage_1_ref_adaln = build_editanything_reference_conditioning(
+            transformer,
+            editanything_ref_images,
+            height=stage_1_output_shape.height,
+            width=stage_1_output_shape.width,
+            video_encoder=video_encoder,
+            dtype=dtype,
+            device=self.device,
+            tiling_config=tiling_config,
+        )
         # DISTILLED_SIGMA_VALUES = [0.421875, 0]
         stage_1_sigmas = torch.Tensor(DISTILLED_SIGMA_VALUES).to(self.device)
         pass_no = stage_1_pass_no
@@ -382,6 +430,10 @@ class DistilledPipeline:
                     audio_guidance_scale=audio_cfg_guidance_scale,
                     audio_identity_guidance_scale=audio_identity_guidance_scale,
                     skip_audio_to_video=frozen_video_conditioning is not None,
+                    ref_context=stage_1_ref_context,
+                    ref_adaln=stage_1_ref_adaln,
+                    video_context_mask_builder=video_context_mask_builder,
+                    audio_context_mask_builder=audio_context_mask_builder,
                 ),
                 mask_context=mask_context,
                 interrupt_check=interrupt_check,
@@ -394,13 +446,6 @@ class DistilledPipeline:
                 self_refiner_generator=generator,
             )
 
-        stage_1_output_shape = VideoPixelShape(
-            batch=1,
-            frames=num_frames,
-            width=width if skip_stage_2 else width // 2,
-            height=height if skip_stage_2 else height // 2,
-            fps=frame_rate,
-        )
         if interrupt_check is not None and interrupt_check():
             return None, None
         if frozen_video_conditioning is not None:
@@ -424,6 +469,7 @@ class DistilledPipeline:
                 device=self.device,
                 tiling_config=tiling_config,
             )
+        stage_1_conditionings += stage_1_ref_conditionings
         if frozen_video_conditioning is None and guiding_images:
             stage_1_conditionings += image_conditionings_by_adding_guiding_latent(
                 images=guiding_images,
@@ -524,7 +570,8 @@ class DistilledPipeline:
                 return decoded_video, decoded_audio, latent_slice
             return decoded_video, decoded_audio
 
-        stage_2_sigmas = torch.Tensor(STAGE_2_DISTILLED_SIGMA_VALUES).to(self.device)
+        stage_2_sigma_values = DISTILLED_8_STEPS_STAGE_2_SIGMA_VALUES if LTX23_USE_DISTILLED_8_STEPS_STAGE_2_SIGMAS and ltx2_22B_class else STAGE_2_DISTILLED_SIGMA_VALUES
+        stage_2_sigmas = torch.Tensor(stage_2_sigma_values).to(self.device)
         upscaled_video_latent = upsample_video(
             latent=video_state.latent[:1],
             video_encoder=video_encoder,
@@ -535,6 +582,8 @@ class DistilledPipeline:
         cleanup_memory()
 
         pass_no = 2
+        stage_2_ref_context = stage_2_ref_adaln = None
+        stage_2_ref_conditionings = []
         if loras_slists is not None:
             stage_2_steps = len(stage_2_sigmas) - 1
             update_loras_slists(
@@ -571,6 +620,10 @@ class DistilledPipeline:
                     audio_nag=audio_NAG,
                     alt_guidance_scale=alt_guidance_scale,
                     skip_audio_to_video=frozen_video_conditioning is not None,
+                    ref_context=stage_2_ref_context,
+                    ref_adaln=stage_2_ref_adaln,
+                    video_context_mask_builder=video_context_mask_builder,
+                    audio_context_mask_builder=audio_context_mask_builder,
                 ),
                 mask_context=mask_context,
                 interrupt_check=interrupt_check,
@@ -589,6 +642,16 @@ class DistilledPipeline:
             width=width,
             height=height,
             fps=frame_rate,
+        )
+        stage_2_ref_conditionings, stage_2_ref_context, stage_2_ref_adaln = build_editanything_reference_conditioning(
+            transformer,
+            editanything_ref_images,
+            height=stage_2_output_shape.height,
+            width=stage_2_output_shape.width,
+            video_encoder=video_encoder,
+            dtype=dtype,
+            device=self.device,
+            tiling_config=tiling_config,
         )
         if interrupt_check is not None and interrupt_check():
             return None, None
@@ -613,6 +676,7 @@ class DistilledPipeline:
                 device=self.device,
                 tiling_config=tiling_config,
             )
+        stage_2_conditionings += stage_2_ref_conditionings
         if frozen_video_conditioning is None and guiding_images_stage2:
             stage_2_conditionings += image_conditionings_by_adding_guiding_latent(
                 images=guiding_images_stage2,

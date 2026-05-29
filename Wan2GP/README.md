@@ -2,22 +2,44 @@
 
 -----
 <p align="center">
-<b>WanGP by DeepBeepMeep : The best Open Source Video Generative Models Accessible to the GPU Poor</b>
+<b>WanGP by DeepBeepMeep : The best Open Source Generative Models Accessible to the GPU Poor</b>
 </p>
 
-WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, Z-Image, LongCat, Kandinsky, LTXV, LTX-2, Qwen3 TTS, Chatterbox, HearMula, ... with:
-- Low VRAM requirements (as low as 6 GB of VRAM is sufficient for certain models)
-- Support for old Nvidia GPUs (RTX 10XX, 20xx, ...)
-- Support for AMD GPUs (RDNA 4, 3, 3.5, and 2), instructions in the Installation Section Below.
-- Very Fast on the latest GPUs
-- Easy to use Full Web based interface
-- Support for many checkpoint Quantized formats: int8, fp8, gguf, NV FP4, Nunchaku
-- Auto download of the required model adapted to your specific architecture
-- Tools integrated to facilitate Video Generation : Mask Editor, Prompt Enhancer, Temporal and Spatial Generation, MMAudio, Video Browser, Pose / Depth / Flow extractor, Motion Designer
-- Plenty of ready to use Plug Ins: Gallery Browser, Upscaler, Models/Checkpoints Manager, CivitAI browser and downloader, ...
-- Loras Support to customize each model
-- Queuing system : make your shopping list of videos to generate and come back later
-- Headless mode: launch the generation of multiple image / videos / audio files using a command line
+WanGP is a one-stop super app for the best open source generative models across video, image, audio, and text-to-speech.
+
+## Highlights
+
+| Modality | Supported models |
+| --- | --- |
+| **Video** | **Wan 2.1/2.2** and derived models, **LTX-2**, **Hunyuan Video 1/1.5**, **LongCat**, **Kandinsky**, **LTXV**, **MagiHuman** |
+| **Image** | **Qwen Image**, **Z-Image**, **Flux 1/2** (Klein, Chroma), **HiDream** |
+| **Audio / TTS** | **Qwen3 TTS**, **Ace Step 1/2/XL**, **Omnivoice**, **Index TTS2**, **KugelAudio**, **HearMula**, **Chatterbox** |
+
+### Run More Models on More Hardware
+
+- **Low VRAM requirements**: run select models with as little as **6 GB of VRAM**.
+- **Older Nvidia GPU support**: use RTX 10XX, 20XX, and newer cards.
+- **AMD GPU support**: run on RDNA 4, 3, 3.5, and 2 hardware; see the Installation section below.
+- **Fast latest-GPU performance**: take advantage of modern GPU acceleration.
+- **Full web interface**: generate, manage, and reuse outputs from an easy browser UI.
+- **LoRA customization**: adapt each model with LoRAs, reuse LoRAs stored in another App.
+- **Many quantized checkpoint formats**: use int8, fp8, gguf, NV FP4, and Nunchaku.
+- **Architecture-aware downloads**: automatically fetch the model files suited to your hardware.
+- **Finetunes**: add your own finetunes / checkpoints or the ones you found on Hugging Face or CivitAI
+- **Generation queue**: line up videos, images, and audio jobs, then come back later.
+- **Headless mode**: launch batches from the command line for images, videos, and audio.
+- **WanGP API**: add generative capabilities to your own apps.
+
+### Built-In Creation Tools
+
+- **Video, image, and audio galleries**: browse generations and reuse them as new inputs.
+- **Reusable settings**: extract settings from any generation, create templates, and share them.
+- **Per-model prompt enhancer**: improve prompts with model-specific syntax and expectations.
+- **Input preparation tools**: use the mask editor, background remover, pose/depth/flow extractors, speaker diarization, and background noise/song remover.
+- **Deepy low-VRAM offline agent**: orchestrate generation jobs and tedious tasks such as transcription, video splitting, and color-frame generation while you are away.
+- **Temporal and spatial upsampling**: improve outputs with RIFE, FlashVSR, and Lanczos.
+- **Audio postprocessing**: generate soundtracks with MMAudio, replace voices with SeedVC, or remux a video with any soundtrack.
+- **Ready-to-use plug-ins**: Gallery Browser, Motion Designer, Models/Checkpoints Manager, CivitAI browser and downloader, and more.
 
 **Discord Server to get Help from the WanGP Community and show your Best Gens:** https://discord.gg/g7efUW9jGV
 
@@ -33,6 +55,61 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
+### 29th of May 2026: WanGP v11.88, Humans Accelerators
+- **Create Hierarchies of Loras / Change Order of Loras**
+
+- **WanGP Toolbar** with keyboard shortcuts:
+    - **Search**: switch quickly to another model by just entering a few letters of its name
+    - **Refresh Model List**: no longer needed to restart the app to add or modify a finetune
+    - **Unload All**: free most of the RAM/VRAM used by WanGP
+
+- **MOV/MKV Container Support**: beside *mp4* files you can now store you video gens in *mov* and *mkv* containers
+
+- **ProRes422 & DNxHR HQ Video Codecs**: these professional video codecs have some fans out there
+
+- **LTX-2 Guide**: click the "i" to the right of the model description to get tips / explanations on how to use LTX2 models
+
+- **LTX2 Smearing Fix**: the smearing / ghosting is now mostly gone
+
+- **Omnivoice Fix**: you will enjoy this fix unless you liked the gibberish generator of the previous version
+
+
+### 21st of May 2026: WanGP v11.77, I can hear Voices
+It has never been easier to do voice cloning directly in video models:
+
+- **Voice Cloning with any Video Model**: you generated a great *LTX2/Ovi/Multitalk/...* and are sad the model didnt support natively *Voice Cloning*? Just use the new *SeedVC Audio Postprocessing* to replace up to two voices of your choice, it works magically with any video model ! You will find this feature in the *Audio* advanced tab or as *Late Posprocessing for Audio or Video*.  WanGP exclusive *Two Voices* feature will detect who is talking and will make seamlessly the voices replacements at the right audio locations.
+
+*New WanGP v11.75*: Voice cloning preserves background noise / music & supports singing. You can also enable *SeedVC v2* in the *Config / Extensions* tab for a higher quality voice cloning (alas no singing support with v2).
+
+- **DramaBox**: like *ScenemeAI* that *DramaBox* uses LTX2.3 world knowledge to generate lively audio outputs. DramaBox is even more expressive (but also slower) than ScenemeAI. Of course as usual you get an exclusive Dialogue mode available out of the box.
+
+- **LTX2.3 Id Lora Distilled**: Nice surprise ! it seems *Id Lora* worked from day 1 with *LTX2.3 Distilled*. It is now unlocked, you can now generate your own LTX2 video with voice cloning.
+
+- **LTX2.3 EditAnything Reference**: you can at last inject one reference image in a LTX2 Video. You will need to use the dedicated finetunes *dev* and *distilled* finetunes I have prepared. Please note this feature is experimental.
+
+- **LTX2 OmniNFT Lora Preset for better audio/video sync**: I have added this *LTX2 OmniNFT Lora* in a *Preset* so that it can be applied quickly. According to the authors of this Lora Audio/Video sync should be greatly improved.
+
+- **LTX2 Dev reborn in Dev-Distilled**: WanGP LTX2 Dev implementation was based on LTX2 official implementation. I hadn't noticed that ComfyUI version of Dev was now completely different as it was mixing the *Distilled Lora* with Dev in both phases ( not just in phase 2). This makes dev faster and reduces the color saturation specific to Dev. So I have added a few *Dev Distilled Accelerator Profiles* you can pick from the *Settings List*. And now since Dev & Distilled are closer than ever, I have unlocked all the *Control Video* processes for Dev.
+
+- **LTX2 Prompt Relay**: you can now target specific time range for a part of the prompt, for instance *[25%:50%]the man says "hello". Check the new *Prompt Online Help* marked with "i" for more info. 
+
+- **LongCat 1.5 Avatar**: with this new *Talking Head* model you are going to become at last a fan of *LongCat*. It is fast (8 steps distilled) and delivers high quality potentially unlimited gens using *Sliding Windows*.
+
+- **Settings can now store Audio/Video/Images**: you can ask WanGP to store (in option) all the media you use frequently in a WanGP *Settings file*. This is very convenient for instance if you always use the same *Voice sample* or *Reference Images*. Even better, you can use these settings with *Deepy* of the *Full Video Process* plugin
+
+- **Extensions Enabled by Default**: most extensions (upsampling, mmaudio, prompt enhancer, ...) are now enabled by Default so that they are easier to be found. Don't worry their corresponding checkpoints will be downloaded only if you actually use these extensions
+
+- **FlashVSR Spatial Upsampling for Images**: this excellent spatial upsampler has been optimized for images and is now can be used as a *Post Processing* option or on existing images (thanks to the new *Late Post Processing* added on Images!)
+
+- **FlashVSR Two Pass**:  banding artifacts may appear when FlashVSR is used at very high res. The Two Pass mode which is twice as slow may reduce the banding. 
+
+- **HiDreamO1**: new 2604 finetune that should reduce the annoying blocking effect of this model. I have also regenerated all the quanto int8 files (they are now 20% larger, price to pay for quality) to reduce even further the blocking. Keep in mind that this model likes res >= 1080p
+
+Also various fixes (Omnivoice, IndexTTS, Chatterbox, ...)
+
+*Update 11.75*: Voice cloning with background and voice supports, FlashVSR for Images, Dev Distilled\
+*Update 11.77*: LTX2 Prompt Relay, LongCat Avatar
+
 ### 12th of May 2026: WanGP v11.66, Can you keep up?
 
 - **HiDreamO1**: New Image Image model with editing capabilities is quite good to preserve identify and write text. WanGP version requires very Low VRAM and supports out of the Box *Control Image* & *Preview*.
