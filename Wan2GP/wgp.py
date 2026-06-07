@@ -7606,7 +7606,7 @@ def generate_video(
                     frames_to_inject = frames_to_inject_parsed,
                     verbose_level=verbose_level,
                     gen_cache=gen_cache,
-                    pid_upsampler= pid_upsampler_session if pid_upsampler_session is not None else {},
+                    pid_upsampler= pid_upsampler_session if pid_upsampler_session is not None else None,
                 )
                 if pid_upsampler_session is not None and not pid_persistent:
                     release_pid_models()
