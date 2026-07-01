@@ -13138,7 +13138,7 @@ def get_js():
 def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480", video_length=81, num_inference_steps=20, state=None,
                     image_refs=None, video_source=None, image_start=None, image_end=None,
                     audio_guide=None, audio_guide2=None, alt_prompt="", image_prompt_type="Image Prompt",
-                    video_prompt_type="Video Prompt", audio_prompt_type="Audio Prompt",
+                    video_prompt_type="Video Prompt", audio_prompt_type="",
                     model_mode=None, custom_settings=None):
     """
     Dedicated API endpoint for n8n integration.
@@ -13272,6 +13272,15 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
         image_prompt_type = image_prompt_type.replace("E", "")
 
     print(f"[n8n API] [{request_id}] Effective image_prompt_type='{image_prompt_type}' | image_start={'PIL Image ' + str(getattr(image_start,'size','')) if _is_pil(image_start) else 'None'} | image_end={'PIL Image ' + str(getattr(image_end,'size','')) if _is_pil(image_end) else 'None'}")
+
+    # Guard: detect audio_prompt_type mismatch — if voice cloning mode requires audio but none provided
+    normalized_audio_mode = str(audio_prompt_type or "").strip().upper()
+    if "A" in normalized_audio_mode and not audio_guide:
+        print(f"[n8n API] [{request_id}] WARNING: audio_prompt_type='{audio_prompt_type}' requests voice cloning but no audio_guide was provided. Falling back to voice design mode.")
+        audio_prompt_type = ""
+    if "B" in normalized_audio_mode and not audio_guide2:
+        print(f"[n8n API] [{request_id}] WARNING: audio_prompt_type='{audio_prompt_type}' requests two-speaker mode but audio_guide2 is missing. Falling back to single-speaker mode.")
+        audio_prompt_type = "A" if audio_guide else ""
 
     with n8n_generate_lock:
       try:
@@ -14077,7 +14086,7 @@ if __name__ == "__main__":
                     alt_prompt=data.get("alt_prompt", ""),
                     image_prompt_type=data.get("image_prompt_type", "Image Prompt"),
                     video_prompt_type=data.get("video_prompt_type", "Video Prompt"),
-                    audio_prompt_type=data.get("audio_prompt_type", "Audio Prompt"),
+                    audio_prompt_type=data.get("audio_prompt_type", ""),
                     model_mode=data.get("model_mode"),
                     custom_settings=data.get("custom_settings")
                 )
