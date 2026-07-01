@@ -14032,8 +14032,15 @@ if __name__ == "__main__":
                 return file_input
 
             prompt = data.get("prompt", "")
+            # Handle case where prompt is a dict/object (e.g. AI Agent sends entire image_request object)
+            if isinstance(prompt, dict):
+                print(f"[n8n API] [Call {call_id}] WARNING: 'prompt' is a dict object, extracting prompt string from it")
+                prompt = prompt.get("prompt", prompt.get("text", str(prompt)))
             if not prompt and "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
-                 prompt = data["data"][0] 
+                 prompt = data["data"][0]
+            # Ensure prompt is always a string
+            if not isinstance(prompt, str):
+                prompt = str(prompt) 
 
             # Accept alternate key names that n8n users sometimes send
             raw_image_start = data.get("image_start") or data.get("start_image") or data.get("first_frame_url")
