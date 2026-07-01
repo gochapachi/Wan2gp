@@ -180,6 +180,7 @@ unique_id = 0
 unique_id_lock = threading.Lock()
 api_jobs = {}
 api_jobs_lock = threading.Lock()
+n8n_generate_lock = threading.Lock()
 n8n_request_counter = 0
 offloadobj = enhancer_offloadobj = wan_model = None
 reload_needed = True
@@ -7570,7 +7571,8 @@ def generate_media(
                 remove_temp_filenames(temp_filenames_list)
                 gen_state = plugin_data = None
                 clear_gen_cache()
-                offloadobj.unload_all()
+                if offloadobj is not None:
+                    offloadobj.unload_all()
                 trans.cache = None 
                 if trans2 is not None: 
                     trans2.cache = None 
@@ -13270,36 +13272,37 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
 
     print(f"[n8n API] [{request_id}] Effective image_prompt_type='{image_prompt_type}' | image_start={'PIL Image ' + str(getattr(image_start,'size','')) if _is_pil(image_start) else 'None'} | image_end={'PIL Image ' + str(getattr(image_end,'size','')) if _is_pil(image_end) else 'None'}")
 
-    try:
-        success = generate_video(
+    with n8n_generate_lock:
+      try:
+        success = generate_media(
             task=task,
             send_cmd=simple_send_cmd,
             client_id=request_id,
             image_mode=image_mode, # Dynamic based on model
             prompt=prompt,
             alt_prompt=alt_prompt,
-            negative_prompt="(low quality, worst quality, extra digits, fewer digits:1.4), (bad anatomy, bad hands, missing fingers:1.2), lowres, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry",
+            negative_prompt="" if model_def.get("no_negative_prompt", False) else "(low quality, worst quality, extra digits, fewer digits:1.4), (bad anatomy, bad hands, missing fingers:1.2), lowres, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry",
             resolution=resolution,
             video_length=int(video_length),
             duration_seconds=duration_seconds,
             pause_seconds=0,
-            batch_size=1,
+            batch_size=ui_defaults.get("batch_size", 1),
             seed=-1,
             force_fps=str(fps),
             num_inference_steps=int(num_inference_steps),
-            guidance_scale=5.0,
-            guidance2_scale=5.0,
-            guidance3_scale=5.0,
-            switch_threshold=1.0, 
-            switch_threshold2=1.0,
-            guidance_phases=1,
+            guidance_scale=ui_defaults.get("guidance_scale", 5.0),
+            guidance2_scale=ui_defaults.get("guidance2_scale", 5.0),
+            guidance3_scale=ui_defaults.get("guidance3_scale", 5.0),
+            switch_threshold=ui_defaults.get("switch_threshold", 1.0), 
+            switch_threshold2=ui_defaults.get("switch_threshold2", 1.0),
+            guidance_phases=ui_defaults.get("guidance_phases", 1),
             model_switch_phase=None,
             alt_guidance_scale=1.0,
             alt_scale=0.0,
             audio_guidance_scale=1.0,
             audio_scale=1.0,
-            flow_shift=1.0, 
-            sample_solver="unipc", 
+            flow_shift=ui_defaults.get("flow_shift", 1.0), 
+            sample_solver=ui_defaults.get("sample_solver", "unipc"), 
             embedded_guidance_scale=1.0,
             repeat_generation=1,
             multi_prompts_gen_type="Random",
@@ -13312,7 +13315,7 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
             image_prompt_type=image_prompt_type,
             image_start=image_start,
             image_end=image_end,
-            model_mode="Text to Video",
+            model_mode=ui_defaults.get("model_mode", "Text to Video"),
             video_source=video_source,
             keep_frames_video_source="0",
             input_video_strength=0.5,
@@ -13337,15 +13340,19 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
             audio_guide2=audio_guide2,
             custom_guide=None,
             audio_source=None,
-            seedvc_voice_sample=None,
-            seedvc_voice_sample2=None,
+            replace_voice_method="",
+            replace_voice_sample=None,
+            replace_voice_sample2=None,
             audio_prompt_type=audio_prompt_type,
             speakers_locations=[],
             sliding_window_size=ui_defaults.get("sliding_window_size", 0),
             sliding_window_overlap=ui_defaults.get("sliding_window_overlap", 0),
+            sub_parallel_window_size=0,
+            sub_parallel_window_overlap=0,
             sliding_window_color_correction_strength=1.0,
             sliding_window_overlap_noise=0.0,
             sliding_window_discard_last_frames=0,
+            sliding_window_trim_first_frames=0,
             image_refs_relative_size=1.0,
             remove_background_images_ref=False,
             temporal_upsampling="",
@@ -13353,8 +13360,8 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
             film_grain_intensity=0.0,
             film_grain_saturation=1.0,
             postprocess_audio="",
-            MMAudio_prompt="",
-            MMAudio_neg_prompt="",
+            postprocess_audio_prompt="",
+            postprocess_audio_neg_prompt="",
             RIFLEx_setting=0,
             NAG_scale=1.0,
             NAG_tau=1.0,
@@ -13371,7 +13378,7 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
             override_profile=-1,
             override_attention="",
             temperature=1.0,
-            custom_settings=None,
+            custom_settings=ui_defaults.get("custom_settings", None),
             top_p=1.0,
             top_k=50,
             self_refiner_setting=0,
@@ -13425,7 +13432,7 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
                 return f"Generation failed: {'; '.join(last_error)}"
             return "Generation failed (check server logs for details)."
 
-    except Exception as e:
+      except Exception as e:
         print(f"[n8n API] Exception: {e}")
         import traceback
         traceback.print_exc()
