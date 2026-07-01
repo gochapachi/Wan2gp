@@ -13138,7 +13138,8 @@ def get_js():
 def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480", video_length=81, num_inference_steps=20, state=None,
                     image_refs=None, video_source=None, image_start=None, image_end=None,
                     audio_guide=None, audio_guide2=None, alt_prompt="", image_prompt_type="Image Prompt",
-                    video_prompt_type="Video Prompt", audio_prompt_type="Audio Prompt"):
+                    video_prompt_type="Video Prompt", audio_prompt_type="Audio Prompt",
+                    model_mode=None, custom_settings=None):
     """
     Dedicated API endpoint for n8n integration.
     Simplified interface that wraps the complex generate_video function.
@@ -13315,7 +13316,7 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
             image_prompt_type=image_prompt_type,
             image_start=image_start,
             image_end=image_end,
-            model_mode=ui_defaults.get("model_mode", "Text to Video"),
+            model_mode=model_mode if model_mode is not None else ui_defaults.get("model_mode", "Text to Video"),
             video_source=video_source,
             keep_frames_video_source="0",
             input_video_strength=0.5,
@@ -13378,7 +13379,7 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
             override_profile=-1,
             override_attention="",
             temperature=1.0,
-            custom_settings=ui_defaults.get("custom_settings", None),
+            custom_settings=custom_settings if custom_settings is not None else ui_defaults.get("custom_settings", None),
             top_p=1.0,
             top_k=50,
             self_refiner_setting=0,
@@ -14076,7 +14077,9 @@ if __name__ == "__main__":
                     alt_prompt=data.get("alt_prompt", ""),
                     image_prompt_type=data.get("image_prompt_type", "Image Prompt"),
                     video_prompt_type=data.get("video_prompt_type", "Video Prompt"),
-                    audio_prompt_type=data.get("audio_prompt_type", "Audio Prompt")
+                    audio_prompt_type=data.get("audio_prompt_type", "Audio Prompt"),
+                    model_mode=data.get("model_mode"),
+                    custom_settings=data.get("custom_settings")
                 )
                 
                 with api_jobs_lock:
