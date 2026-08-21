@@ -38,6 +38,7 @@ sys.modules['torch'] = mock_torch
 sys.modules['torch._logging'] = MagicMock()
 sys.modules['fastapi'] = MagicMock()
 sys.modules['fastapi.responses'] = MagicMock()
+sys.modules['fastapi.staticfiles'] = MagicMock()
 sys.modules['fastapi.concurrency'] = MagicMock()
 
 # --- Load wgp.py ---
@@ -74,10 +75,11 @@ def mock_generate_video(*args, **kwargs):
 
 if __name__ == "__main__":
     try:
-        with patch('importlib.metadata.version', return_value="3.7.6"), patch('os.remove'):
+        with patch('importlib.metadata.version', return_value="3.7.12"), patch('os.remove'):
             spec.loader.exec_module(wgp)
             
         wgp.generate_video = mock_generate_video
+        wgp.generate_media = mock_generate_video
         wgp.gr.Error = Exception
         wgp.models_def = {"Wan2.1-T2V-1.3B": {"image_outputs": False, "audio_only": False, "architecture": "t2v"}}
         wgp.model_types_handlers = {"t2v": MagicMock()}
@@ -86,11 +88,11 @@ if __name__ == "__main__":
         print("   FINAL API GENERATION VERIFICATION REPORT")
         print("="*50)
         
-        # Test 1: Verify new default URL (should be http://wan.gochapachi.com:9000)
+        # Test 1: Verify new default URL (should be https://wan.anagataitsolutions.in)
         print("\n>> TEST: Default URL Base Verification")
         wgp.models_def["test_model"] = {"image_outputs": False, "audio_only": False, "architecture": "t2v"}
         url = wgp.n8n_generate_api(prompt="test", model_type="test_model")
-        if "http://wan.gochapachi.com:9000" in url:
+        if "https://wan.anagataitsolutions.in" in url:
             print(f"   [SUCCESS] Default URL correct: {url}")
         else:
             print(f"   [FAILURE] Default URL incorrect: {url}")

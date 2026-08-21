@@ -14,7 +14,7 @@ echo   Starting Wan2GP + VPS Tunnel
 echo ============================================
 
 REM Extract serverAddr from frpc.toml if it exists
-set "serverAddr=wan.gochapachi.com"
+set "serverAddr=wan.anagataitsolutions.in"
 if exist "%ROOT_DIR%frpc.toml" (
     for /f "tokens=2 delims==" %%a in ('findstr "serverAddr" "%ROOT_DIR%frpc.toml"') do (
         set "val=%%a"
@@ -45,9 +45,10 @@ if not exist "%FRPC_EXE%" (
 
 REM Start Wan2GP
 set GRADIO_MCP_SERVER=True
-echo Starting Wan2GP...
+set "N8N_OUTPUT_URL_BASE=https://!serverAddr!"
+echo Starting Wan2GP with output base: https://!serverAddr!...
 cd /d "%APP_DIR%"
-start "Wan2GP App" cmd /k ""%PYTHON_EXE%" wgp.py"
+start "Wan2GP App" cmd /k "set "N8N_OUTPUT_URL_BASE=https://!serverAddr!" && "%PYTHON_EXE%" wgp.py"
 
 echo Waiting for Wan2GP to initialize...
 timeout /t 15 >nul
@@ -55,7 +56,7 @@ timeout /t 15 >nul
 echo.
 echo -----------------------------------------------------------
 echo Starting Tunnel to %serverAddr%...
-echo Your site should be live at: http://%serverAddr%:9000
+echo Your site should be live at: https://%serverAddr%
 echo -----------------------------------------------------------
 echo (Ensure you have deployed the Server component on your VPS!)
 echo.

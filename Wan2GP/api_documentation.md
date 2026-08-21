@@ -21,7 +21,7 @@ This endpoint is specifically designed for synchronous video generation, returni
 ### Example Request (Curl)
 
 ```bash
-curl -X POST "http://wan.gochapachi.com:9000/n8n/sync" \
+curl -X POST "https://wan.anagataitsolutions.in/n8n/sync" \
      -H "Content-Type: application/json" \
      -d '{
        "prompt": "A futuristic city at sunset, cinematic lighting",
@@ -38,7 +38,7 @@ Returns a JSON object with the public URL of the generated video.
 
 ```json
 {
-  "url": "http://wan.gochapachi.com:9000/outputs/wan_1740000000.mp4"
+  "url": "https://wan.anagataitsolutions.in/outputs/wan_1740000000.mp4"
 }
 ```
 
@@ -51,7 +51,7 @@ Returns a JSON object with the public URL of the generated video.
 Directly access and download generated videos and images from the server.
 
 ### Example
-`GET http://wan.gochapachi.com:9000/outputs/wan_1739962383.mp4`
+`GET https://wan.anagataitsolutions.in/outputs/wan_1739962383.mp4`
 
 ---
 
@@ -59,14 +59,13 @@ Directly access and download generated videos and images from the server.
 
 WanGP also supports the standard Gradio API structure.
 
-- **Interactive Documentation:** `http://wan.gochapachi.com:9000/docs` (Swagger UI)
-- **Gradio Config:** `http://wan.gochapachi.com:9000/config`
+- **Interactive Documentation:** `https://wan.anagataitsolutions.in/docs` (Swagger UI)
+- **Gradio Config:** `https://wan.anagataitsolutions.in/config`
 
 ---
 
 ## Performance Notes
 - **Model Loading:** Generation will be slow if the models are not yet loaded into VRAM.
-- **Port:** Default port is `9000`.
 - **Concurrency:** Ensure your VPS has enough VRAM if triggerring multiple requests simultaneously.
 
 ---
@@ -80,7 +79,7 @@ Returns a list of all available model IDs supported by the server. Use the `id` 
 ### Example Request
 
 ```bash
-curl "http://wan.gochapachi.com:9000/n8n/models"
+curl "https://wan.anagataitsolutions.in/n8n/models"
 ```
 
 ### Response

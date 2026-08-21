@@ -54,7 +54,7 @@ def mock_generate_video(*args, **kwargs):
     call_log.append(kwargs)
     state = kwargs.get('state')
     # Use a dummy URL for result
-    return f"https://wan.gochapachi.com/outputs/mock_result_{len(call_log)}.mp4"
+    return f"https://wan.anagataitsolutions.in/outputs/mock_result_{len(call_log)}.mp4"
 
 async def run_verification():
     print("====================================================")

@@ -1,4 +1,4 @@
-﻿import os, sys
+import os, sys
 os.environ["GRADIO_LANG"] = "en"
 # # os.environ.pop("TORCH_LOGS", None)  # make sure no env var is suppressing/overriding
 # os.environ["TORCH_LOGS"]= "recompiles"
@@ -11769,8 +11769,8 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
             try:
                 shutil.copy2(output_filename, clean_path)
                 print(f"[n8n API] Copied {output_filename} to {clean_path}")
-                
-                full_url = f"https://wan.gochapachi.com/outputs/{clean_filename}"
+                output_base = os.getenv("N8N_OUTPUT_URL_BASE", "https://wan.anagataitsolutions.in").rstrip("/")
+                full_url = f"{output_base}/outputs/{clean_filename}"
                 print(f"[n8n API] Success! Output URL: {full_url}")
                 return full_url
             except Exception as e:
@@ -11778,7 +11778,8 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
                 # Fallback to original encoded URL if copy fails
                 filename = os.path.basename(output_filename)
                 filename_encoded = urllib.parse.quote(filename)
-                return f"https://wan.gochapachi.com/outputs/{filename_encoded}"
+                output_base = os.getenv("N8N_OUTPUT_URL_BASE", "https://wan.anagataitsolutions.in").rstrip("/")
+                return f"{output_base}/outputs/{filename_encoded}"
         else:
             print("[n8n API] Generation failed.")
             return "Generation failed (check server logs for details)."
