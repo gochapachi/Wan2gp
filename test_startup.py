@@ -8,7 +8,7 @@ try:
     print(f"Gradio ok: {gradio.__version__}")
     try:
         import mcp
-        print(f"MCP ok: {mcp.__version__}")
+        print(f"MCP ok: {getattr(mcp, '__version__', 'installed')}")
     except ImportError:
         print("MCP missing!")
     

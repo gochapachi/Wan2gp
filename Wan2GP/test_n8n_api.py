@@ -85,7 +85,7 @@ def mock_generate_video(*args, **kwargs):
 if __name__ == "__main__":
     try:
         # Patch importlib.metadata.version mainly for mmgp check
-        p1 = patch('importlib.metadata.version', return_value="3.7.12")
+        p1 = patch('importlib.metadata.version', return_value="3.7.14")
         # Patch os.remove to avoid deletion of mocked files
         p2 = patch('os.remove')
         

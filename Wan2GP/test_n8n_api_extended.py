@@ -75,7 +75,7 @@ def mock_generate_video(*args, **kwargs):
 
 if __name__ == "__main__":
     try:
-        with patch('importlib.metadata.version', return_value="3.7.12"), patch('os.remove'):
+        with patch('importlib.metadata.version', return_value="3.7.14"), patch('os.remove'):
             spec.loader.exec_module(wgp)
             
         wgp.generate_video = mock_generate_video
