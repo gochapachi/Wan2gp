@@ -30,5 +30,6 @@
         "save_score": 0
     },
     "prompt_enhancer": "",
-    "audio_prompt_type": "A"
+    "audio_prompt_type": "A",
+    "override_profile": 3
 }
