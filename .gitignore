@@ -45,6 +45,7 @@ loras/
 loras_i2v/
 tmp/
 deepy_sessions/
+workspaces/
 dlss5/
 /settings/
 
