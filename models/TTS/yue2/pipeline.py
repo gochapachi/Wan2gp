@@ -34,9 +34,11 @@ class YuE2Pipeline:
         self.hum_encoder = None
         if hum_weights is not None:
             from .hum import HumProjections, HumEncoder
-            with torch.device("meta"):
+            with torch.no_grad(), torch.device("meta"):
                 self.hum = HumProjections()
                 self.hum_encoder = HumEncoder()
+            self.hum.eval().requires_grad_(False)
+            self.hum_encoder.eval().requires_grad_(False)
             for model, filename in ((self.hum, hum_weights), (self.hum_encoder, hum_encoder_weights)):
                 offload.load_model_data(model, filename, default_dtype=None, writable_tensors=False)
                 model.eval().requires_grad_(False)
@@ -45,10 +47,13 @@ class YuE2Pipeline:
         dtype = vae_dtype = torch.bfloat16
         ar_config = Qwen3Config(**json.loads((directory / "yue2_ar.json").read_text()))
         nar_config = YuE2Config(**json.loads((directory / "yue2.json").read_text()))
-        with torch.device("meta"):
+        with torch.no_grad(), torch.device("meta"):
             self.text_encoder = YuE2AR(ar_config)
             self.transformer = YuE2Acoustic(nar_config)
             self.vae = YuE2VAE(YuE2VAEConfig(**json.loads(Path(vae_config).read_text())))
+        self.text_encoder.eval().requires_grad_(False)
+        self.transformer.eval().requires_grad_(False)
+        self.vae.eval().requires_grad_(False)
         for model, filename, precision in ((self.text_encoder, ar_weights, dtype), (self.transformer, acoustic_weights, dtype), (self.vae, vae_weights, vae_dtype)):
             offload.load_model_data(model, filename, default_dtype=precision, writable_tensors=False)
             model.eval().requires_grad_(False)

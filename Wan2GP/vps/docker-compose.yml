@@ -1,0 +1,23 @@
+version: '3.8'
+services:
+  frps:
+    image: snowdreamtech/frps:latest
+    container_name: frps
+    restart: always
+    network_mode: host
+    environment:
+      FRPS_CONFIG: |
+        bindPort = 7000
+        vhostHTTPPort = 8080
+        auth.method = "token"
+        auth.token = "wan2gp-secret-token-123"
+        webServer.addr = "0.0.0.0"
+        webServer.port = 7500
+        webServer.user = "admin"
+        webServer.password = "admin123"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        echo "$FRPS_CONFIG" > /etc/frp/frps.toml
+        /usr/bin/frps -c /etc/frp/frps.toml
