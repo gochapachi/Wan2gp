@@ -69,6 +69,23 @@ function wangpGradio(...args) {
     return wangpGradioValue;
 }
 """
+# WebKit's fetch body reader can strand SSE bytes while its consumer is busy
+# (WebKit bug 322545). Native EventSource does not use that reader. Preserve
+# Gradio's fetch transport for clients that require custom request headers.
+_NATIVE_EVENT_STREAM = """
+if (typeof window !== "undefined" && new Headers(o.headers).keys().next().done) {
+    const source = new EventSource(e, {withCredentials: o.credentials === "include"});
+    const close = () => {
+        source.close();
+        o.signal?.removeEventListener("abort", close);
+    };
+    // Gradio owns stream completion/reopening; never auto-reconnect an old job.
+    source.addEventListener("error", close, {once: true});
+    if (o.signal?.aborted) close();
+    else o.signal?.addEventListener("abort", close, {once: true});
+    return source;
+}
+"""
 _MARK_ANCESTORS = """
 for (let node = f; node; node = node.parent) wangpDirty.add(node);
 }
@@ -110,7 +127,7 @@ function Mn(S){
 # Posters are bounded to preview size and cached on thumbnail nodes (so removing
 # media also releases its cache). Never remove a paused Chrome player's poster:
 # loadeddata can precede painting and removing it can leave the player blank.
-_GALLERY_VIDEO_SOURCE = """
+_GALLERY_VIDEO_SOURCE = Path(__file__).with_name('gallery_save.js').read_text(encoding='utf-8') + """
 const wangpGalleryFrames = new WeakMap();
 const wangpGalleryPosters = new WeakMap();
 const wangpGalleryEmptyPoster = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1' height='1'/%3E";
@@ -139,6 +156,7 @@ function wangpGalleryPosterEntry(video, src) {
 }
 function wangpGalleryVideoClear(video) {
     const state = wangpGalleryFrames.get(video);
+    state?.saveCleanup();
     if (state?.request != null) video.cancelVideoFrameCallback(state.request);
     if (state?.ready) video.removeEventListener("loadeddata", state.ready);
     wangpGalleryFrames.delete(video);
@@ -168,6 +186,7 @@ function wangpGalleryVideoSource(video, src) {
     if (video.src !== requestedSrc) j(video, "src", src);
     const state = {request: null, presented: false};
     wangpGalleryFrames.set(video, state);
+    wangpGallerySave(video, state);
     video.addEventListener("error", wangpGalleryVideoError);
     function show(poster) {
         poster.then(value => {
@@ -200,6 +219,13 @@ function wangpGalleryVideoSource(video, src) {
 """
 
 _PATCHES = {
+    'AudioPlayer-DG1QBBp6.js': [
+        # Svelte invalidates timeRef after this DOM write, re-running the
+        # reactive waveform.on() statement and leaking a listener each tick.
+        # Update the DOM without invalidating the ref; avoid same-time writes.
+        ('y&&t(12,y.textContent=ze(m),y)', 'y&&y.textContent!==ze(m)&&(y.textContent=ze(m))'),
+        ('b&&t(13,b.textContent=ze(m),b)', 'b&&b.textContent!==ze(m)&&(b.textContent=ze(m))'),
+    ],
     'Video-C-llMUaJ.js': [
         ('function ki(t){', _GALLERY_VIDEO_SOURCE + 'function ki(t){'),
         ('t[25](e),s=!0', 't[25](e),wangpGalleryVideoMount(e),s=!0'),
@@ -256,6 +282,10 @@ _PATCHES = {
         ('W[s]?.focus();', 'W[s]?.focus({preventScroll:true});'),
         # The selected image is wanted now; only offscreen thumbnails are lazy.
         ('class:n[22].caption&&"with-caption",loading:"lazy"', 'class:n[22].caption&&"with-caption",loading:"eager"'),
+        # Preview already has a thumbnail strip. Do not mount a second full
+        # media grid behind it; retain the empty wrapper's height for layout.
+        ('b=te(n[16]),u=[];', 'b=te(n[22]&&n[7]?[]:n[16]),u=[];'),
+        ('_[0]&8454274){b=te(a[16]);', '_[0]&12648706){b=te(a[22]&&a[7]?[]:a[16]);'),
         # Do not animate the strip when the selected thumbnail is already visible.
         ('Q=x-S+X/2-H/2+A.scrollLeft;A&&', 'Q=x-S+X/2-H/2+A.scrollLeft;if(x>=S&&x+X<=S+H)return;A&&'),
         ('function Re(s){switch(s.code){', 'function Re(s){if(["Escape","ArrowLeft","ArrowRight"].includes(s.code))wangpGalleryUser=true;switch(s.code){'),
@@ -279,6 +309,9 @@ _PATCHES = {
         ('R.inputs.map(W=>No(W,J,K))', 'R.inputs.map((W,index)=>wangpMetadata&&index===1?wangpMetadata:No(W,J,K))'),
         ('else if(ne.stage==="error"){', 'else if(ne.stage==="error"){wangpMetadataSent.delete(S);'),
         ('if(d.closed)return;t(21,ce=[st("Error",String(ae)', 'wangpMetadataSent.delete(S);if(d.closed)return;t(21,ce=[st("Error",String(ae)'),
+        # Gradio already shows its lost-connection status. A failed request for
+        # each pending event would otherwise add the same error toast again.
+        ('if(ne.message){const ge=ne.message.replace(rf,', 'if(ne.message&&!ne.message.startsWith("Connection errored out.")){const ge=ne.message.replace(rf,'),
         ('function Jt(S,J=null,K=null){', 'function Jt(S,J=null,K=null){if(window.__wangpGradioStale)return;'),
         # Hide the API footer fragment (including its divider), not the API.
         ('y=l[5]&&Qi(l);', 'y=false;'),
@@ -309,6 +342,7 @@ _PATCHES = {
         ('return l.$$set=w=>{' + _NODE_INPUTS, 'return l.$$set=w=>{' + _NODE_SKIP + _NODE_INPUTS),
     ],
     'index-Do3LSwBC.js': [
+        ('function lf(e,o={}){', 'function lf(e,o={}){' + _NATIVE_EVENT_STREAM),
         # Inspect only the actual gallery-view output, never unrelated text.
         # Its whole response must be discarded before an old index can paint.
         ('for(let g=0;g<ge.length;g++)for(let P=0;', 'for(let g=0;g<ge.length;g++){const view=ge[g].find(v=>v&&v.prop==="value"&&s[v.id]?.props.elem_id==="wangp-gallery-view");if(view&&window.WanGPGallerySelection?.acceptView(view.value)===false)continue;for(let P=0;'),
@@ -414,6 +448,7 @@ def install():
     versions = {path.name: sha256(_asset(str(path)).encode()).hexdigest()[:16] for path in asset_paths if path != _EDITOR_PATH}
     original_template = routes.templates.TemplateResponse
     session_script = Path(__file__).with_name('session_guard.js').read_text(encoding='utf-8')
+    proxy_root_script = Path(__file__).with_name('proxy_root.js').read_text(encoding='utf-8')
 
     @wraps(original_template)
     def template_response(*args, **kwargs):
@@ -421,6 +456,7 @@ def install():
         source = response.body.decode('utf-8')
         patched = _version_html(source, versions)
         if patched != source:
+            patched = patched.replace('<script type="importmap">', '<script>' + proxy_root_script + '</script><script type="importmap">', 1)
             config = response.context['config']
             if not config.get('auth_required'):
                 guard = session_script.replace('__WANGP_UI_SIGNATURE__', json.dumps(config['wangp_ui_signature']))

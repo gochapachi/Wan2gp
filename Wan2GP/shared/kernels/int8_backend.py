@@ -19,9 +19,32 @@ _direct_cutlass = False
 _original_forward = None
 _ops_registered = False
 _fusion_logged = False
+_compile_cache_root = None
+_compile_cache_backend = None
+_wide_convrot_triton = None
+# Bump when changes to INT8 custom operators invalidate compiled graphs.
+_COMPILE_CACHE_VERSION = 1
 # Includes row quantization, a possible INT32 GEMM result, and a temporary output.
 # Never allocate an activation-sized quantization buffer for a whole video.
 _SCRATCH_BYTES = 16 * 1024 * 1024
+
+
+def prepare_compile_cache(enabled):
+    """Isolate compiled graphs by resolved backend; leave eager runs untouched."""
+    global _compile_cache_root, _compile_cache_backend
+    if not enabled or _compile_cache_backend == _backend:
+        return
+    from torch._inductor.runtime.runtime_utils import cache_dir
+
+    if _compile_cache_root is None:
+        _compile_cache_root = cache_dir()
+    path = os.path.join(_compile_cache_root, f"wangp_int8_v{_COMPILE_CACHE_VERSION}", _backend)
+    os.makedirs(path, exist_ok=True)
+    # Reset in-memory graphs as well when switching backends in the same process.
+    torch.compiler.reset()
+    os.environ["TORCHINDUCTOR_CACHE_DIR"] = path
+    _compile_cache_backend = _backend
+    print(f"[INT8] Compile Cache: {_backend} (v{_COMPILE_CACHE_VERSION}).")
 
 
 def _probe_kitchen():
@@ -75,6 +98,19 @@ def resolve_backend(selection):
 
 def kitchen_enabled():
     return _backend == "kitchen"
+
+
+def _wide_convrot_linear(input, weight, bias=None):
+    """Use Triton for ConvRot rows beyond Kitchen's graph-safe CUTLASS width."""
+    from shared.qtypes.int8_convrot import _rotate_activation
+
+    rotated = _rotate_activation(input, 256)
+    x = rotated.reshape(-1, rotated.shape[-1])
+    scale = triton._prepare_weight_scale(weight._scale, weight.shape[0], input.device)
+    out = _wide_convrot_triton.fused_quant_scaled_mm(x, weight._data, scale, out_dtype=input.dtype)
+    if bias is not None:
+        out += bias
+    return out.reshape(*input.shape[:-1], weight.shape[0])
 
 
 def can_fuse_linear(module, x):
@@ -155,7 +191,9 @@ def kitchen_linear_fused(input, weight, bias, input_act, act_weight, act_eps, re
         raise ValueError("Fused INT8 output must match the output shape, dtype and device and be contiguous")
     out = input.new_empty((x.shape[0], n)) if out is None else out.reshape(-1, n)
     r = residual.reshape(-1, n) if residual is not None else None
-    rows = max(32, (_SCRATCH_BYTES // (k + 4)) // 32 * 32)
+    # The raw ConvRot quantizer requires packed rows, including fused SwiGLU input.
+    row_bytes = k + 4 + (x.shape[-1] * x.element_size() if not x.is_contiguous() else 0)
+    rows = max(32, (_SCRATCH_BYTES // row_bytes) // 32 * 32)
     wrap = _kitchen._wrap_for_dlpack
     stream = torch.cuda.current_stream(input.device).cuda_stream
     bias_arg = (_kitchen._gemm_vector_arg(bias, input.device, input.dtype) if bias is not None
@@ -165,10 +203,11 @@ def kitchen_linear_fused(input, weight, bias, input_act, act_weight, act_eps, re
                     if r is not None else None)
     for start in range(0, x.shape[0], rows):
         stop = min(start + rows, x.shape[0])
+        tile = x[start:stop].contiguous()
         q = torch.empty((stop-start, k), device=input.device, dtype=torch.int8)
         qs = torch.empty((stop-start, 1), device=input.device, dtype=torch.float32)
         _kitchen._C.quantize_int8_rowwise_convrot64(
-            wrap(x[start:stop]), wrap(q), wrap(qs), 256, False,
+            wrap(tile), wrap(q), wrap(qs), 256, False,
             _kitchen._input_act_code(input_act), 0, wrap(act_arg), float(act_eps), stream)
         if r is not None:
             used = _kitchen._C.cutlass_int8_dequant_residual(
@@ -181,7 +220,7 @@ def kitchen_linear_fused(input, weight, bias, input_act, act_weight, act_eps, re
                 wrap(out[start:stop]), _kitchen.DTYPE_TO_CODE[input.dtype], stream)
         if not used:
             raise RuntimeError("Comfy Kitchen rejected the fused SM120 INT8 output tile")
-        del q, qs
+        del q, qs, tile
     return out.reshape(*input.shape[:-1], n)
 
 
@@ -257,6 +296,14 @@ def _register_ops():
 
 
 def kitchen_linear(input, weight, bias=None, *, convrot=False):
+    if convrot and _direct_cutlass and input.shape[-1] > 16384:
+        if (_wide_convrot_triton is not None and not torch.compiler.is_compiling()
+                and not triton._is_fake_tensor(input)):
+            return _wide_convrot_linear(input, weight, bias)
+        # The wide cuBLAS path cannot be captured on validated SM120. Keep a
+        # graph-safe Quanto fallback when Triton is unavailable.
+        from shared.qtypes.int8_convrot import _rotate_activation
+        return torch.nn.functional.linear(_rotate_activation(input, 256), weight, bias)
     scale = triton._prepare_weight_scale(weight._scale, weight.shape[0], input.device)
     x = input.reshape(-1, input.shape[-1])
     if torch.compiler.is_compiling() or triton._is_fake_tensor(input):
@@ -270,6 +317,7 @@ def _quanto_forward(ctx, input, weight, bias=None):
     if (type(input) is torch.Tensor and input.is_cuda
             and input.dtype in (torch.float16, torch.bfloat16, torch.float32)
             and weight._data.is_cuda and weight._data.dtype == torch.int8
+            and (input.shape[-1] <= 16384 or not _direct_cutlass)
             and (not _kitchen_hip or weight.shape[-1] % 16 == 0)):
         ctx.save_for_backward(input, weight)
         return kitchen_linear(input, weight, bias)
@@ -277,7 +325,7 @@ def _quanto_forward(ctx, input, weight, bias=None):
 
 
 def configure(selection, verbose_level=0, *, resolved=None):
-    global _backend, _kitchen, _kitchen_hip, _original_forward, _direct_cutlass, revision
+    global _backend, _kitchen, _kitchen_hip, _original_forward, _direct_cutlass, _wide_convrot_triton, revision
     backend, module = resolve_backend(selection) if resolved is None else resolved
     previous_backend = _backend
     if _original_forward is not None:
@@ -289,6 +337,7 @@ def configure(selection, verbose_level=0, *, resolved=None):
     _backend, _kitchen = "pytorch", None
     _kitchen_hip = False
     _direct_cutlass = False
+    _wide_convrot_triton = None
     if backend == "triton":
         if not triton.maybe_enable_quanto_int8_kernel(verbose_level):
             raise RuntimeError("Failed to enable Triton INT8 kernels")
@@ -298,6 +347,8 @@ def configure(selection, verbose_level=0, *, resolved=None):
         _kitchen = module
         _kitchen_hip = torch.version.hip is not None
         _direct_cutlass = not _kitchen_hip and torch.cuda.get_device_capability() == (12, 0) and not module._DISABLE_CUTLASS_INT8
+        if _direct_cutlass:
+            _wide_convrot_triton, _ = triton._probe_triton_backend()
         _original_forward = qbytes.WeightQBytesLinearFunction.forward
         qbytes.WeightQBytesLinearFunction.forward = staticmethod(_quanto_forward)
     _backend = backend

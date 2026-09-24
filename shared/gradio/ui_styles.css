@@ -11,13 +11,51 @@ gradio-app {
     width: 100%;
 }
 
-/* Hide the preview-close toggle; reference galleries have explicit clear controls. */
+.gallery-container .icon-button-wrapper.wangp-video-actions {
+    position: absolute;
+    right: auto;
+    transform: translate(-50%, -50%);
+    z-index: 5;
+    flex-direction: column;
+    gap: 0;
+    font-size: 13px;
+}
+/* Gradio also sets overflow on its outer block. Keep focus on the frame
+   icons from scrolling that wrapper and clipping the fullscreen control. */
+.block:has(.wangp-video-actions) {
+    overflow: clip !important;
+}
+.wangp-video-actions button[hidden],
+.wangp-video-actions [role="status"]:empty {
+    display: none;
+}
+.wangp-video-actions [role="status"]:not(:empty) {
+    position: absolute;
+    right: 32px;
+    top: 0;
+    width: 230px;
+    padding: 8px 10px;
+    color: var(--body-text-color);
+    background: var(--background-fill-primary);
+    border: 1px solid var(--border-color-primary);
+    border-radius: 4px;
+}
+
+/* The preview cross removes the selected item only in the reference gallery. */
 .gallery-container > .preview button[aria-label="Close"] {
     display: none;
 }
+.amg-remove-selected .gallery-container > .preview button[aria-label="Close"] {
+    display: flex;
+}
 
-/* The preview overlays a taller thumbnail grid. Its outer hidden-overflow
-   wrapper must not scroll when Chrome reveals a focused thumbnail. */
+/* The preview has its own thumbnail strip; no background grid or blur layer. */
+.gallery-container > .preview {
+    background: var(--background-fill-primary);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+}
+/* The outer wrapper must not scroll when Chrome reveals a focused thumbnail. */
 .block:has(> .gallery-container) {
     overflow: clip;
 }
@@ -125,15 +163,16 @@ h2 {
 #queue_html_container .pastel-row {
     background-color: hsl(var(--item-hue, 0), 80%, 92%);
 }
+#queue_html_container .pastel-row td,
+#queue_html_container .pastel-row td * {
+    color: #111827;
+}
 #queue_html_container .alternating-grey-row.even-row {
     background-color: #F8FAFC; /* Light mode grey */
 }
 @media (prefers-color-scheme: dark) {
     #queue_html_container tr:hover td {
          background-color: rgba(255, 255, 255, 0.1) !important;
-    }
-    #queue_html_container .pastel-row {
-        background-color: hsl(var(--item-hue, 0), 35%, 25%);
     }
     #queue_html_container .alternating-grey-row.even-row {
         background-color: #2a3748; /* Dark mode grey */
@@ -445,6 +484,26 @@ overflow-wrap: anywhere;
 user-select: text;
 }
 .compact_text {padding: calc(1px * var(--wangp-ui-scale))}
+/* Keep the compact settings label beside the prompt without shrinking the drop target. */
+.wangp-settings-upload > button[aria-dropeffect] {
+    padding-left: 50%;
+}
+.wangp-settings-upload > button[aria-dropeffect] > .wrap {
+    margin-inline: 0;
+    max-width: 100%;
+    white-space: nowrap;
+}
+.wangp-settings-upload > label.float {
+    display: block;
+    max-width: calc(50% - var(--block-label-margin));
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+.wangp-settings-upload > label.float > span {
+    display: inline-block;
+    vertical-align: middle;
+}
 #video_input .video-container .container {
     flex-direction: row !important;
     display: flex !important;

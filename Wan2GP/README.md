@@ -63,7 +63,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
-## 20th of September 2026: WanGP v13.13 — It's Your Lucky Day²!
+## 20th of September 2026: WanGP v13.1314 — It's Your Lucky Day^$\pi$!
 
 - **Qwen Image 2.1**: A new Qwen Image model with out-of-the-box editing capabilities and strong text rendering. 
 
@@ -80,6 +80,28 @@ No distilled version is available yet.
 - **Deepy Prime for the Masses**: Thanks to the new *Bonsai 2 Abliterated PTQ1_0 checkpoint*, *Deepy Prime* and its advanced *Prompt Enhancer* can now run with **10 GB of VRAM, or possibly less**. You will need *GGUF CUDA kernels 1.0.22*. Please see the installation guide.  
 
 - **UI Optimizations**: The UI should be even faster, especially the Image/Video Gallery.
+
+- **Yue2 Instrumental Model Only**: you can now generate instrumentals track only, please check new option in main dropdown box and also prompt instructions or new prompt enhancer templates. 
+
+- **Yue2 Hum to Song**: Turn a clear hummed melody, your lyrics and a music style into a new stereo song.
+
+- **YuE2 support AR LoRAs**: YuE2 first phase, is an Auto Regressive phase (score writing phase) and it can now accept LoRAs. LoRAs for second Diffusion phase was already added previously.
+
+- **DFlash2 & DSpark Acceleration for Deepy & Prompt Enhancer***: for an extra VRAM cost you will be able to generate up tp 200 tokens / s
+
+- **Various UI Improvements**: add directly the current frame of Video Gallery to the Image Gallery, Extract settings of a Video/Audio/Image in Workspace Gallery 
+
+- **Ming Image 0.1 Design**: a new image generation and editing model for detailed infographics, posters, and carefully arranged layouts. It accepts standard text prompts and a structured JSON format for more precise control over composition. WanGP's visual **Prompt Helper** lets you arrange layers and edit their positions, colors, and descriptions. You can also choose a classic or JSON prompt enhancer to turn a short brief into a detailed prompt with explicit titles, labels, and explanations.
+
+- **Ming Image 0.1 Design-Layer**: turn a finished poster, infographic, or other design into separate transparent image layers. Provide one reference image and a text prompt describing the layers from front to back. WanGP adds every RGBA layer to the image gallery and saves a ZIP of the complete layer set. Design and Design-Layer share their language encoder and vision tower checkpoints to reduce downloads and disk use.
+
+- **Qwen Image 2.1 Viggle Turbo LoRA Accelerators**: generate images faster with **Viggle Turbo v0.1 (4 steps)** or **v0.2 (5 steps)**. Select an acceleration profile to apply the matching LoRA and recommended generation settings.
+
+- **Remove Vocals Audio Postprocessing**: create an instrumental version of an audio track by removing its vocals. Available in **Post Processing**, **Late Post Processing**, and through **Deepy Prime**.
+
+
+*Update v13.1313*: YuE2 instrumental mode, YuE2 Hum to Song, AR LoRA support, and DFlash2 / DSpark acceleration\
+*Update v13.1314*: Ming Image 0.1 Design and Design-Layer, Qwen Image 2.1 Viggle Turbo LoRA accelerators, and Remove Vocals audio postprocessing
 
 ## 16th of September 2026: WanGP v13.10 — It's Your Lucky Day!
 
