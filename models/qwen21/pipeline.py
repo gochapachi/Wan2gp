@@ -172,7 +172,7 @@ def source_latent_canvas(source, width, height, location):
 
 
 class Qwen21Pipeline(QwenImage21Pipeline):
-    def __init__(self, transformer, text_encoder, vae, processor, scheduler_config, viggle_turbo_lora_filename):
+    def __init__(self, transformer, text_encoder, vae, processor, scheduler_config, viggle_turbo_lora_filename=None):
         self.transformer, self.text_encoder, self.vae = transformer, text_encoder, vae
         self.processor, self.tokenizer = processor, processor.tokenizer
         self.viggle_turbo_lora_filename = viggle_turbo_lora_filename

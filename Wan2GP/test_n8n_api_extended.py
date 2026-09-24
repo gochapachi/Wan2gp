@@ -81,8 +81,11 @@ if __name__ == "__main__":
         wgp.generate_video = mock_generate_video
         wgp.generate_media = mock_generate_video
         wgp.gr.Error = Exception
-        wgp.models_def = {"Wan2.1-T2V-1.3B": {"image_outputs": False, "audio_only": False, "architecture": "t2v"}}
-        wgp.model_types_handlers = {"t2v": MagicMock()}
+        wgp.models_def = {
+            "Wan2.1-T2V-1.3B": {"image_outputs": False, "audio_only": False, "architecture": "t2v"},
+            "qwen_image_21_7B": {"image_outputs": True, "audio_only": False, "architecture": "qwen_image_21_7B"}
+        }
+        wgp.model_types_handlers = {"t2v": MagicMock(), "qwen_image_21_7B": MagicMock()}
         
         print("\n" + "="*50)
         print("   FINAL API GENERATION VERIFICATION REPORT")
@@ -115,6 +118,16 @@ if __name__ == "__main__":
                     "prompt": "a futuristic city",
                     "model_type": "flux2_klein_4b",
                     "resolution": "1024x1024"
+                }
+            },
+            {
+                "name": "IMAGE: Qwen 2.1 (Text-to-Image)",
+                "description": "Validates Qwen Image 2.1 7B generation parameters.",
+                "kwargs": {
+                    "prompt": "a cinematic red sports car, 8k resolution, studio lighting",
+                    "model_type": "qwen_image_21_7B",
+                    "resolution": "1024x1024",
+                    "num_inference_steps": 20
                 }
             },
             {
