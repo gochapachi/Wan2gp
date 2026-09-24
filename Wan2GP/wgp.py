@@ -13790,7 +13790,8 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
                     image_refs=None, video_source=None, image_start=None, image_end=None,
                     audio_guide=None, audio_guide2=None, alt_prompt="", image_prompt_type="Image Prompt",
                     video_prompt_type="Video Prompt", audio_prompt_type="",
-                    model_mode=None, custom_settings=None, spatial_upsampler_parameters=None):
+                    model_mode=None, custom_settings=None, spatial_upsampler_parameters=None,
+                    spatial_upsampler_param=None, spatial_upsampler_param2=None):
     """
     Dedicated API endpoint for n8n integration.
     Simplified interface that wraps the complex generate_media function.
@@ -14016,6 +14017,8 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
             "spatial_upsampling": "",
             "spatial_upsampler_prompt": "",
             "spatial_upsampler_reference_images": [],
+            "spatial_upsampler_param": spatial_upsampler_param if spatial_upsampler_param is not None else (spatial_upsampler_parameters or {}).get("spatial_upsampler_param", ui_defaults.get("spatial_upsampler_param", 1)),
+            "spatial_upsampler_param2": spatial_upsampler_param2 if spatial_upsampler_param2 is not None else (spatial_upsampler_parameters or {}).get("spatial_upsampler_param2", ui_defaults.get("spatial_upsampler_param2", None)),
             "spatial_upsampler_face_count": 1,
             "film_grain_intensity": 0.0,
             "film_grain_saturation": 1.0,
@@ -14062,6 +14065,12 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
         else:
             expected_args = set(sig_params.keys())
             filtered_params = {k: v for k, v in gen_params.items() if k in expected_args}
+            for param_name, param in sig_params.items():
+                if param_name not in ["task", "send_cmd"] and param_name not in filtered_params:
+                    if param.default == inspect.Parameter.empty:
+                        fallback_val = 1 if param_name.endswith("param") else (None if "param" in param_name else "")
+                        filtered_params[param_name] = fallback_val
+                        print(f"[n8n API] [{request_id}] WARNING: Missing required argument '{param_name}' for generate_media. Auto-filled with {fallback_val!r}")
         success = generate_media(
             task=task,
             send_cmd=simple_send_cmd,
@@ -14756,7 +14765,9 @@ if __name__ == "__main__":
                         audio_prompt_type=data.get("audio_prompt_type", ""),
                         model_mode=data.get("model_mode"),
                         custom_settings=data.get("custom_settings"),
-                        spatial_upsampler_parameters=data.get("spatial_upsampler_parameters")
+                        spatial_upsampler_parameters=data.get("spatial_upsampler_parameters"),
+                        spatial_upsampler_param=data.get("spatial_upsampler_param"),
+                        spatial_upsampler_param2=data.get("spatial_upsampler_param2")
                     )
                 
                     with api_jobs_lock:
