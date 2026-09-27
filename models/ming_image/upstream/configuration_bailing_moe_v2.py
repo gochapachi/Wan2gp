@@ -1,5 +1,6 @@
 """Bailing MoE model configuration"""
 from transformers.configuration_utils import PretrainedConfig
+from transformers.utils import is_flash_attn_2_available
 
 class BailingMoeV2Config(PretrainedConfig):
     model_type = "bailing_moe_v2"
@@ -42,7 +43,7 @@ class BailingMoeV2Config(PretrainedConfig):
         output_router_logits=False,
         partial_rotary_factor=0.5,
         router_type="topN",
-        _attn_implementation="flash_attention_2",
+        _attn_implementation=None,
         **kwargs,
     ):
         self.num_hidden_layers = num_hidden_layers
@@ -81,5 +82,9 @@ class BailingMoeV2Config(PretrainedConfig):
         self.partial_rotary_factor = partial_rotary_factor
         self.router_type = router_type
         super().__init__(pad_token_id=pad_token_id, tie_word_embeddings=tie_word_embeddings, **kwargs)
+        if _attn_implementation is None:
+            _attn_implementation = "flash_attention_2" if is_flash_attn_2_available() else "eager"
+        elif _attn_implementation == "flash_attention_2" and not is_flash_attn_2_available():
+            _attn_implementation = "eager"
         self._attn_implementation = _attn_implementation
 

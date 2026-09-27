@@ -66,7 +66,7 @@ class Qwen2_5_VLVisionConfig(PretrainedConfig):
         window_size=112,
         out_hidden_size=3584,
         fullatt_block_indexes=[7, 15, 23, 31],
-        _attn_implementation="flash_attention_2",
+        _attn_implementation=None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -83,6 +83,10 @@ class Qwen2_5_VLVisionConfig(PretrainedConfig):
         self.window_size = window_size
         self.fullatt_block_indexes = fullatt_block_indexes
         self.out_hidden_size = out_hidden_size
+        if _attn_implementation is None:
+            _attn_implementation = "flash_attention_2" if is_flash_attn_2_available() else "sdpa"
+        elif _attn_implementation == "flash_attention_2" and not is_flash_attn_2_available():
+            _attn_implementation = "sdpa"
         self._attn_implementation = _attn_implementation
 
     @classmethod

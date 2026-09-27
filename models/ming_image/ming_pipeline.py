@@ -20,6 +20,7 @@ from PIL import Image
 from torch import nn
 from torch.nn import functional as F
 from transformers import Qwen2Config, Qwen2ForCausalLM
+from transformers.utils import is_flash_attn_2_available
 
 from shared.utils import files_locator as fl
 from shared.utils.phase_progress import (
@@ -104,6 +105,10 @@ def _make_text_encoder(mllm_config, connector_config, mlp_config):
     config = BailingMM2Config.from_json_file(mllm_config)
     config._attn_implementation = "eager"
     config.llm_config._attn_implementation = "eager"
+    if hasattr(config, "vision_config") and config.vision_config is not None:
+        config.vision_config._attn_implementation = (
+            "flash_attention_2" if is_flash_attn_2_available() else "sdpa"
+        )
     connector_cfg = Qwen2Config(**connector_config)
     connector_cfg._attn_implementation = "sdpa"
     with torch.device("cpu"), init_empty_weights(include_buffers=True):
