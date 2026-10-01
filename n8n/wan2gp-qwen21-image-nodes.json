@@ -1,0 +1,84 @@
+{
+  "_meta": {
+    "workflowId": "mZqjYy23kuMJUNKN",
+    "workflowName": "Dev - AI Social Post Generation",
+    "purpose": "Exact node definitions applied to the n8n workflow, kept in the repo so the change is reviewable, diffable and re-appliable.",
+    "appliedOn": "2026-09-29",
+    "validation": "n8n_validate_workflow (strict): 0 errors, 23 valid connections, 0 invalid connections.",
+    "notes": [
+      "Reference mode is video_prompt_type 'I' (not 'KI'). WanGP drops image_refs unless 'I' is present (wgp.py:1394-1403), and 'K' re-derives the output canvas from reference #1 (wgp.py:7866-7872).",
+      "image_prompt_type is always ''. Qwen Image 2.1 declares no image_prompt_types_allowed and its pipeline only consumes input_ref_images (models/qwen21/pipeline.py:209,217).",
+      "guidance_scale is NOT sent: /n8n/sync hardcodes it from the model defaults (guidance 4.0, wgp.py:13959 + qwen21_handler.py:150) and ignores custom_settings.guidance_scale.",
+      "num_inference_steps: 40 is the documented recommendation for the base model at ~1024px."
+    ]
+  },
+
+  "chain": "Build Image Request -> Wan2GP Qwen 2.1 -> Download Image -> Extract Image -> Upload Image (MinIO) -> Presign Image -> Update Blog Row -> Notify",
+
+  "nodes": [
+    {
+      "id": "b28c2c78-92fe-4248-af26-22a90ca237db",
+      "name": "Build Image Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2688, 192],
+      "parameters": {
+        "jsCode": "// Wan2GP / Qwen Image 2.1 payload builder.\n// Reference mode is \"I\" (references are people/objects), NOT \"KI\": with \"K\" the engine\n// re-derives the output canvas from reference #1's aspect ratio (wgp.py:7866-7872 +\n// utils.calculate_new_dimensions) and the poster would stop being 1:1.\n// Refs are sent in the same order the prompt numbers them as <image1>, <image2>, ...\nconst HTTP_URL = new RegExp('^https?://', 'i');\nconst MAX_REFS = 4;                 // model supports 10; posters rarely benefit from more\nconst parsed = $('Parse Output').first().json;\nconst blog = parsed.blog_data || {};\nconst prompt = (parsed.image_prompt || 'a modern dental clinic photograph').trim();\n\nconst normalizeRefs = (urls) => {   // -> string[]\n  const out = [];\n  const seen = new Set();\n  for (const raw of (Array.isArray(urls) ? urls : [urls])) {\n    if (typeof raw !== 'string') continue;\n    const u = raw.trim();\n    if (!HTTP_URL.test(u)) continue;   // Wan2GP fetches with urllib: http(s) only\n    const key = u.toLowerCase();\n    if (seen.has(key)) continue;        // de-dupe\n    seen.add(key);\n    out.push(u);\n    if (out.length >= MAX_REFS) break;  // order is significant -> truncate, never shuffle\n  }\n  return out;\n};\n\nconst refs = normalizeRefs(parsed.reference_image_urls);\nconst refMode = refs.length > 0 ? 'I' : '';  // '' => pure text-to-image\n\n// Wan2GP /n8n/sync contract: only \"I\" in video_prompt_type actually enables image_refs.\n// image_prompt_type stays empty: Qwen 2.1 has no start/end frame modes, references only.\nconst body = {\n  prompt: prompt,\n  model_type: 'qwen_image_21_7B',\n  resolution: '1024x1024',                    // multiples of 32 (vae_block_size); Instagram 1:1\n  num_inference_steps: 40,                    // model default = recommended (40 @ ~1024px)\n  image_prompt_type: '',\n  video_prompt_type: refMode,\n  image_refs: refs,\n  custom_settings: { qwen21_kv_cache: 'Disabled', rgba: 'Disabled' },\n};\n\nreturn { json: { body: body, image_prompt: prompt, reference_image_urls: refs, ref_mode: refMode === 'I' ? 'references' : 'text-only', blog_data: blog, caption: parsed.caption || '' } };"
+      }
+    },
+    {
+      "id": "ee6b7217-53fa-4c08-99d2-0c7e66603467",
+      "name": "Wan2GP Qwen 2.1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [2912, 192],
+      "parameters": {
+        "method": "POST",
+        "url": "http://wan.anagataitsolutions.in:9000/n8n/sync",
+        "authentication": "none",
+        "nodeCredentialType": "",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": { "timeout": "900000" }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": false,
+      "onError": "continueRegularOutput",
+      "_leftover": "credentials.googleApi is still stored on the node but is inert (authentication: none). The MCP update path cannot send a typed null for `credentials`; clear it in the n8n UI if you want it gone.",
+      "_fallbackUrl": "https://wan.anagataitsolutions.in/n8n/sync  (use this if the app is only exposed through the reverse proxy)"
+    },
+    {
+      "id": "45dc66ca-0f4b-4398-acb9-ac7477909ff6",
+      "name": "Download Image",
+      "_added": true,
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [3024, 192],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "options": {
+          "response": { "response": { "outputPropertyName": "data", "responseFormat": "file" } },
+          "timeout": "120000"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "fd690af7-8f99-40ed-8bdf-602ad8df99a3",
+      "name": "Extract Image",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3360, 192],
+      "parameters": { "jsCode": "see extractImageCode at the bottom of this file" },
+      "retryOnFail": false,
+      "alwaysOutputData": false,
+      "onError": "continueRegularOutput"
+    }
+  ],
+
+  "extractImageCode": "// Wan2GP returns { url }; \"Download Image\" turns that into binary.data.\n// Re-attach context from Parse Output (HTTP nodes drop upstream JSON) and keep the\n// existing skip_upload contract so \"Process Each Blog\" keeps looping on failure.\nconst parsed = $('Parse Output').first().json;\nconst blog = parsed.blog_data || {};\nconst caption = parsed.caption || '';\nconst refUrls = parsed.reference_image_urls || [];\nconst src = $input.first() || {};\nconst bin = src.binary && src.binary.data;\nconst resp = $('Wan2GP Qwen 2.1').first().json || {};\nconst err = resp.error || (resp.message ? String(resp.message).slice(0, 400) : '');\n\nif (!bin || !bin.data) {\n  console.error('No image for blog id=' + blog.id + ' err=' + err + ' - emitting skip_upload to keep SplitInBatches loop alive');\n  return { json: { error: 'No image generated', error_detail: err || 'Wan2GP returned no url', blog_data: blog, caption: caption, reference_image_urls: refUrls, skip_upload: true, website_url: blog.Website_url || '', wp_user: blog.wp_user || '', app_password: blog.app_password || '', fileName: 'failed-' + (blog.id || Date.now()) + '.jpg' } };\n}\n\nconst fileName = 'social-post-' + Date.now() + '.jpg';   // server image codec is jpeg_95 -> .jpg\nreturn [{ json: { success: true, mimeType: bin.mimeType || 'image/jpeg', source_url: resp.url || '', blog_data: blog, caption: caption, website_url: blog.Website_url || '', wp_user: blog.wp_user || '', app_password: blog.app_password || '', fileName: fileName, reference_image_urls: refUrls }, binary: { data: { data: bin.data, mimeType: bin.mimeType || 'image/jpeg', fileName: fileName } } }];"
+}

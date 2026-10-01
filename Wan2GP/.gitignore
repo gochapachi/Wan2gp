@@ -64,3 +64,8 @@ generate_*.py
 test_prepare_settings.py
 *_progress.txt
 gradio_api_endpoints.txt
+test_*.json
+test_*.py
+anchor_*.png
+implementation_plan.md
+
