@@ -51,6 +51,10 @@ workspaces/
 dlss5/
 /settings/
 
+# Local engineering specifications and tests must never be committed.
+/specs/
+/tests/
+
 wgp_config.json
 plugins_local.json
 /plugins/wan2gp-*/
