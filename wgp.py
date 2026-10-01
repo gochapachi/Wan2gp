@@ -13931,6 +13931,16 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
 
     print(f"[n8n API] [{request_id}] Effective image_prompt_type='{image_prompt_type}' | image_start={'PIL Image ' + str(getattr(image_start,'size','')) if _is_pil(image_start) else 'None'} | image_end={'PIL Image ' + str(getattr(image_end,'size','')) if _is_pil(image_end) else 'None'}")
 
+    # Guard: reference mode without usable reference images (all downloads may have failed).
+    usable_refs = [ref for ref in (image_refs or []) if ref is not None] if isinstance(image_refs, list) else ([image_refs] if image_refs else [])
+    if "I" in str(video_prompt_type or "") and len(usable_refs) == 0:
+        print(f"[n8n API] [{request_id}] WARNING: video_prompt_type='{video_prompt_type}' needs reference images but none are usable. Falling back to text-to-image.")
+        video_prompt_type = str(video_prompt_type).replace("I", "").replace("K", "")
+        image_refs = []
+    else:
+        image_refs = usable_refs
+    print(f"[n8n API] [{request_id}] Effective video_prompt_type='{video_prompt_type}' | usable image_refs={len(usable_refs)}")
+
     # Guard: detect audio_prompt_type mismatch — if voice cloning mode requires audio but none provided
     normalized_audio_mode = str(audio_prompt_type or "").strip().upper()
     if "A" in normalized_audio_mode and not audio_guide:
@@ -14715,18 +14725,37 @@ if __name__ == "__main__":
                             err = job.get('error', 'Job failed or disappeared') if job else 'Job disappeared'
                             return JSONResponse(status_code=500, content={"error": err})
             
-                async def process_n8n_file(file_input):
+                # S3/MinIO gateways reject the default "Python-urllib/3.x" User-Agent on
+                # presigned URLs (HTTP 403), so every fetched asset must send a real one.
+                n8n_fetch_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
+
+                async def process_n8n_file(file_input, label="asset"):
                     if not file_input: return None
                     if isinstance(file_input, list):
-                        return [await process_n8n_file(f) for f in file_input]
+                        fetched = []
+                        for entry in file_input:
+                            resolved = await process_n8n_file(entry, label)
+                            if resolved is not None:
+                                fetched.append(resolved)
+                        return fetched
                     if isinstance(file_input, str) and (file_input.startswith("http") or len(file_input) > 255):
                         if file_input.startswith("http"):
                              import urllib.request
                              import tempfile
                              ext = os.path.splitext(file_input.split("?")[0])[1] or ".tmp"
                              temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
-                             urllib.request.urlretrieve(file_input, temp_file.name)
-                             return temp_file.name
+                             try:
+                                 request = urllib.request.Request(file_input, headers=n8n_fetch_headers)
+                                 with urllib.request.urlopen(request, timeout=120) as response:
+                                     payload = response.read()
+                                 with open(temp_file.name, "wb") as handle:
+                                     handle.write(payload)
+                                 print(f"[n8n API] [{call_id}] fetched {label} ({len(payload)} bytes) from {file_input.split('?')[0]}")
+                                 return temp_file.name
+                             except Exception as e:
+                                 # A dead or forbidden reference must not abort a paid generation.
+                                 print(f"[n8n API] [{call_id}] WARNING: could not fetch {label} '{file_input[:120]}' -> {e}. Skipping it.")
+                                 return None
                     return file_input
 
                 prompt = data.get("prompt", "")
@@ -14741,14 +14770,16 @@ if __name__ == "__main__":
                 raw_image_start = data.get("image_start") or data.get("start_image") or data.get("first_frame_url")
                 raw_image_end = data.get("image_end") or data.get("end_image") or data.get("last_frame_url")
 
-                image_refs = await process_n8n_file(data.get("image_refs"))
-                video_source = await process_n8n_file(data.get("video_source"))
-                image_start = await process_n8n_file(raw_image_start)
-                image_end = await process_n8n_file(raw_image_end)
-                audio_guide = await process_n8n_file(data.get("audio_guide"))
-                audio_guide2 = await process_n8n_file(data.get("audio_guide2"))
+                image_refs = await process_n8n_file(data.get("image_refs"), "image_ref")
+                video_source = await process_n8n_file(data.get("video_source"), "video_source")
+                image_start = await process_n8n_file(raw_image_start, "image_start")
+                image_end = await process_n8n_file(raw_image_end, "image_end")
+                audio_guide = await process_n8n_file(data.get("audio_guide"), "audio_guide")
+                audio_guide2 = await process_n8n_file(data.get("audio_guide2"), "audio_guide2")
 
-                print(f"[n8n API] [Call {call_id}] After file processing: image_start={'<PIL/path>' if image_start else 'None'} | image_end={'<PIL/path>' if image_end else 'None'}")
+                ref_count = len(image_refs) if isinstance(image_refs, list) else (1 if image_refs else 0)
+                requested_ref_count = len(data.get("image_refs") or []) if isinstance(data.get("image_refs"), list) else ref_count
+                print(f"[n8n API] [Call {call_id}] After file processing: image_refs={ref_count}/{requested_ref_count} usable | video_prompt_type='{data.get('video_prompt_type', '')}' | image_start={'<PIL/path>' if image_start else 'None'} | image_end={'<PIL/path>' if image_end else 'None'}")
 
                 dummy_state = {} 
                 from fastapi.concurrency import run_in_threadpool
