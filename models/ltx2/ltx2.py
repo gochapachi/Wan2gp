@@ -1186,7 +1186,7 @@ class LTX2:
                 waveform = waveform[:, :target_channels]
                 if waveform.shape[1] < target_channels:
                     waveform = torch.cat((waveform, waveform.new_zeros(waveform.shape[0], target_channels - waveform.shape[1], waveform.shape[2])), dim=1)
-        audio_processor = AudioProcessor(sample_rate=audio_encoder.sample_rate, mel_bins=audio_encoder.mel_bins, mel_hop_length=audio_encoder.mel_hop_length, n_fft=audio_encoder.n_fft)
+        audio_processor = AudioProcessor(sample_rate=audio_encoder.sample_rate, mel_bins=audio_encoder.mel_bins, mel_hop_length=audio_encoder.mel_hop_length, n_fft=audio_encoder.n_fft, device=self.device)
         mel = audio_processor.waveform_to_mel(waveform, int(audio_sample_rate))
         audio_params = next(audio_encoder.parameters())
         audio_latent = audio_encoder(mel.to(device=audio_params.device, dtype=audio_params.dtype))
@@ -1210,6 +1210,66 @@ class LTX2:
             return None
         decoded = decoded[:frame_count, :source_height * 2, :source_width * 2]
         return decoded.permute(3, 0, 1, 2).contiguous()
+
+    @generation_progress
+    def refine_video(
+        self,
+        load_window,
+        frame_count: int,
+        height: int,
+        width: int,
+        output_frames: int,
+        output_height: int,
+        output_width: int,
+        prompt: str,
+        seed: int,
+        fps: float,
+        window_frames: int,
+        tile_height: int,
+        tile_width: int,
+        gentle: bool,
+        tiles_per_call: int = 0,
+        conditioning_latent: torch.Tensor | None = None,
+        carry_frames: int = 0,
+        fusion_previous: torch.Tensor | None = None,
+        fusion_export: slice | None = None,
+        pixel_frame_offset: int = 0,
+        VAE_tile_size=None,
+        callback=None,
+        set_progress_status=None,
+        interrupt_check=None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None] | None:
+        if not isinstance(self.pipeline, DistilledPipeline):
+            raise RuntimeError("LTX detail refinement requires a distilled checkpoint")
+        if frame_count > LTX2_UPSCALE_MAX_FRAMES:
+            raise ValueError(f"LTX detail refinement expects at most {LTX2_UPSCALE_MAX_FRAMES} frames per call")
+        decoded = self.pipeline.refine_video(
+            load_window=load_window,
+            frame_count=frame_count,
+            height=height,
+            width=width,
+            output_frames=output_frames,
+            output_height=output_height,
+            output_width=output_width,
+            prompt=prompt,
+            seed=seed,
+            frame_rate=fps,
+            window_frames=window_frames,
+            tile_height=tile_height,
+            tile_width=tile_width,
+            gentle=gentle,
+            tiles_per_call=tiles_per_call,
+            conditioning_latent=conditioning_latent,
+            carry_frames=carry_frames,
+            fusion_previous=fusion_previous,
+            fusion_export=fusion_export,
+            latent_frame_offset=int(pixel_frame_offset) // 8,
+            tiling_config=_build_tiling_config(VAE_tile_size, fps),
+            callback=callback,
+            set_progress_status=set_progress_status,
+            interrupt_check=interrupt_check,
+        )
+        return None if decoded is None else (decoded[0].permute(3, 0, 1, 2), decoded[1])
 
     def get_loras_transformer(self, get_model_recursive_prop, model_type, video_prompt_type, base_model_type=None, model_def = None, lora_dir = None, sample_solver = None, **kwargs):
         control_map = {
@@ -1655,10 +1715,7 @@ class LTX2:
                         waveform = waveform[:, :target_channels, :]
                         if waveform.shape[1] < target_channels:
                             pad_channels = target_channels - waveform.shape[1]
-                            pad = torch.zeros(
-                                (waveform.shape[0], pad_channels, waveform.shape[2]),
-                                dtype=waveform.dtype,
-                            )
+                            pad = waveform.new_zeros((waveform.shape[0], pad_channels, waveform.shape[2]))
                             waveform = torch.cat([waveform, pad], dim=1)
 
                 waveform = waveform.to(device="cpu", dtype=torch.float32)
@@ -1670,6 +1727,7 @@ class LTX2:
                     mel_bins=self.audio_encoder.mel_bins,
                     mel_hop_length=self.audio_encoder.mel_hop_length,
                     n_fft=self.audio_encoder.n_fft,
+                    device=self.device,
                 )
                 skip_audio_conditioning = False
                 waveform_sample_rate = int(waveform_sample_rate or 0)
