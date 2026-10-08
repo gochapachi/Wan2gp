@@ -54,10 +54,17 @@ def keep_default_device():
     """Restores the thread's default device on exit, e.g. around an mmgp offload.profile() call made during generate(): it
     leaves the CUDA default device installed."""
     context = getattr(torch._GLOBAL_DEVICE_CONTEXT, "device_context", None)
+    target_device = None if context is None else getattr(context, "device", None)
     try:
         yield
     finally:
-        torch.set_default_device(None if context is None else context.device)
+        torch.set_default_device(target_device)
+        if target_device is None and hasattr(torch._GLOBAL_DEVICE_CONTEXT, "device_context") and torch._GLOBAL_DEVICE_CONTEXT.device_context is None:
+            try:
+                delattr(torch._GLOBAL_DEVICE_CONTEXT, "device_context")
+            except AttributeError:
+                pass
+
 
 
 @contextlib.contextmanager

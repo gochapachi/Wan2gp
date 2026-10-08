@@ -4207,8 +4207,15 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
         loading_model_ids[preview_path] = "tiny_vae"
     with model_unload_guard(), offload.loading_context(loading_callback, loading_model_ids):
         torch.set_default_device(None) # cpu, without the DeviceContext mode that routes every torch call through Python
+
+        if hasattr(torch._GLOBAL_DEVICE_CONTEXT, "device_context") and torch._GLOBAL_DEVICE_CONTEXT.device_context is None:
+            try:
+                delattr(torch._GLOBAL_DEVICE_CONTEXT, "device_context")
+            except AttributeError:
+                pass
         if preview_path is not None:
             preview_decoder = load_decoder(preview_name, preview_path)
+
         wan_model, pipe = model_type_handler.load_model(
                     local_model_file_list, runtime_model_type or model_type, base_model_type, model_def, quantizeTransformer = quantizeTransformer, text_encoder_quantization = text_encoder_quantization,
                     dtype = transformer_dtype, VAE_dtype = VAE_dtype, mixed_precision_transformer = mixed_precision_transformer, save_quantized = save_quantized, submodel_no_list   = model_submodel_no_list, text_encoder_filename = text_encoder_filename, profile=profile, lm_decoder_engine=lm_decoder_engine_obtained, **model_kwargs )

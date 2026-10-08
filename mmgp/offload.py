@@ -4723,7 +4723,11 @@ def all(pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLora = False, p
     global total_pinned_bytes, max_pinnable_bytes, last_offload_obj
     kwargs = locals().copy()
     previous_pinnable_limit = max_pinnable_bytes
-    previous_device, previous_offload = torch.get_default_device(), last_offload_obj
+    try:
+        previous_device = torch.get_default_device()
+    except (AttributeError, Exception):
+        previous_device = torch.device("cpu")
+    previous_offload = last_offload_obj
     self = offload()
     try:
         return _configure(self, **kwargs)
@@ -4734,8 +4738,12 @@ def all(pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLora = False, p
         self.release()
         max_pinnable_bytes = previous_pinnable_limit # live registrations keep their actual charge, even after cancellation
         last_offload_obj = previous_offload
-        torch.set_default_device(previous_device)
+        try:
+            torch.set_default_device(previous_device)
+        except Exception:
+            pass
         raise error from None
+
 
 
 def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLora = False, partialPinning = False, loras = None, quantizeTransformer = True,  extraModelsToQuantize = None, quantizationType = qint8, budgets= 0, workingVRAM = None, asyncTransfers = True, compile = False, convertWeightsFloatTo = torch.bfloat16, perc_reserved_mem_max = 0, coTenantsMap = None, vram_safety_coefficient = 0.8, compile_mode ="default", verboseLevel = -1, loading_callback=None, prefetchWindow = None, smartPinning = None, readAhead = False, autoPreload = False):
@@ -4810,7 +4818,15 @@ def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLo
 
 
 
-    torch.set_default_device(None) # cpu, without the DeviceContext mode that routes every torch call through Python
+    try:
+        torch.set_default_device(None) # cpu, without the DeviceContext mode that routes every torch call through Python
+    except Exception:
+        pass
+    if hasattr(torch._GLOBAL_DEVICE_CONTEXT, "device_context") and torch._GLOBAL_DEVICE_CONTEXT.device_context is None:
+        try:
+            delattr(torch._GLOBAL_DEVICE_CONTEXT, "device_context")
+        except AttributeError:
+            pass
 
     ignored_models = getattr(pipe_or_dict_of_modules, "_mmgp_ignore_models", ())
     if hasattr(pipe_or_dict_of_modules, "components"):

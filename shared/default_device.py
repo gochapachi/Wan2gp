@@ -30,7 +30,43 @@ def _rewrite_arg_value(argv: MutableSequence[str], option: str, value: str) -> N
             return
 
 
+def patch_torch_default_device():
+    try:
+        import torch
+        if hasattr(torch, "get_default_device"):
+            orig_get = torch.get_default_device
+            def safe_get_default_device():
+                try:
+                    ctx = getattr(torch._GLOBAL_DEVICE_CONTEXT, "device_context", None)
+                    if ctx is not None:
+                        device = ctx.device
+                        if device.index is not None:
+                            return device
+                        return torch.tensor([]).device
+                    return torch.device("cpu")
+                except Exception:
+                    return torch.device("cpu")
+            torch.get_default_device = safe_get_default_device
+
+        if hasattr(torch, "set_default_device"):
+            orig_set = torch.set_default_device
+            def safe_set_default_device(device):
+                orig_set(device)
+                if device is None and hasattr(torch._GLOBAL_DEVICE_CONTEXT, "device_context") and torch._GLOBAL_DEVICE_CONTEXT.device_context is None:
+                    try:
+                        delattr(torch._GLOBAL_DEVICE_CONTEXT, "device_context")
+                    except AttributeError:
+                        pass
+            torch.set_default_device = safe_set_default_device
+    except Exception:
+        pass
+
+
+patch_torch_default_device()
+
+
 def set_default_cuda_device_from_arg(arg_name: str, default_device: str = "cuda:0") -> bool:
+    patch_torch_default_device()
     option = _arg_name_to_option(arg_name)
     if not option:
         return False
@@ -50,3 +86,4 @@ def set_default_cuda_device_from_arg(arg_name: str, default_device: str = "cuda:
     os.environ["CUDA_VISIBLE_DEVICES"] = visible_device
     _rewrite_arg_value(argv, option, default_device)
     return True
+
