@@ -4805,8 +4805,15 @@ class LoadingCallback:
 def all(pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLora = False, partialPinning = False, loras = None, quantizeTransformer = True,  extraModelsToQuantize = None, quantizationType = qint8, budgets= 0, workingVRAM = None, asyncTransfers = True, compile = False, convertWeightsFloatTo = torch.bfloat16, perc_reserved_mem_max = 0, coTenantsMap = None, vram_safety_coefficient = 0.8, compile_mode ="default", verboseLevel = -1, loading_callback=None, prefetchWindow = None, smartPinning = None, readAhead = False, autoPreload = False, cudaGraphs = False, preloadExperts = True):
     """Configure offloading, optionally reporting phases and accepting cancellation."""
     global total_pinned_bytes, max_pinnable_bytes, last_offload_obj
+    kwargs = locals().copy()
+    previous_pinnable_limit = max_pinnable_bytes
     device_context = getattr(torch._GLOBAL_DEVICE_CONTEXT, "device_context", None)
     previous_device, previous_offload = None if device_context is None else getattr(device_context, "device", None), last_offload_obj
+    if previous_device is None:
+        try:
+            previous_device = torch.get_default_device()
+        except Exception:
+            previous_device = torch.device("cpu")
     self = offload()
     try:
         return _configure(self, **kwargs)
