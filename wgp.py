@@ -4084,6 +4084,11 @@ def init_pipe(pipe, kwargs, profile, output_type="video"):
         kwargs["pinnedMemory"] = False
         kwargs["asyncTransfers"] = False
 
+    if not server_config.get("pin_memory", True) or not server_config.get("pinned_memory", True):
+        kwargs["pinnedMemory"] = False
+    elif output_type == "image" and not server_config.get("image_pin_memory", False):
+        kwargs["pinnedMemory"] = False
+
     return mmgp_profile
 
 reset_prompt_enhancer_requested = False
