@@ -1,5 +1,5 @@
 # Copyright (c) 2024-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
-# ------------------ Memory Management 4.0.0 for the GPU Poor by DeepBeepMeep (mmgp)------------------
+# ------------------ Memory Management 4.1.0 for the GPU Poor by DeepBeepMeep (mmgp)------------------
 #
 # This module contains multiples optimisations so that models such as Flux (and derived), Mochi, CogView, HunyuanVideo, ...  can run smoothly on a 24 GB GPU limited card. 
 # This a replacement for the accelerate library that should in theory manage offloading, but doesn't work properly with models that are loaded / unloaded several
@@ -72,6 +72,8 @@ from contextvars import ContextVar
 from concurrent.futures import ThreadPoolExecutor
 import ctypes
 import threading
+import itertools
+import weakref
 import numpy
 from accelerate import init_empty_weights
 from functools import wraps
@@ -79,7 +81,7 @@ import functools
 import types
 import inspect
 
-from mmgp import safetensors2
+from mmgp import safetensors2, runtime
 from .read_ahead import ReadAhead, BATCH as READ_AHEAD_BATCH, WINDOW as READ_AHEAD_WINDOW, MAX_RANGES as READ_AHEAD_MAX_RANGES
 from mmgp import profile_type
 from .quant_router import (
@@ -93,7 +95,7 @@ from .quant_router import (
     get_extension_handler,
     normalize_extension_path,
 )
-from optimum.quanto import freeze,  qfloat8, qint4 , qint8, quantize, QModuleMixin, QLinear, QTensor,  quantize_module, register_qmodule
+from optimum.quanto import freeze,  qfloat8, qint2, qint4 , qint8, quantize, QModuleMixin, QLinear, QTensor,  quantize_module, register_qmodule
 # support for Embedding module quantization that is not supported by default by quanto
 @register_qmodule(torch.nn.Embedding)
 class QEmbedding(QModuleMixin, torch.nn.Embedding):
@@ -246,14 +248,14 @@ def _get_perc_reserved_mem_max(perc_reserved_mem_max = 0):
         perc_reserved_mem_max = float(os.getenv("perc_reserved_mem_max", 0) or 0)
 
     if perc_reserved_mem_max <= 0:             
-        perc_reserved_mem_max = 0.40 if os.name == 'nt' else 0.8
+        perc_reserved_mem_max = 0.40 if os.name == 'nt' else 0.6
     return perc_reserved_mem_max
     
 def _get_max_reservable_memory(perc_reserved_mem_max = 0):
     max_reservable_memory = perc_reserved_mem_max * physical_memory
     return  max_reservable_memory
 
-def _detect_main_towers(model, min_floors = 5):
+def _detect_main_towers(model, min_floors = 5, extra_towers = ()):
     cur_blocks_prefix = None
     towers_modules= []
     towers_names= []
@@ -279,7 +281,7 @@ def _detect_main_towers(model, min_floors = 5):
 
                 cur_blocks_seq = num
             else:
-                if len(floors_modules) >= min_floors:
+                if len(floors_modules) >= min_floors or floors_modules and tower_name.rstrip(".") in extra_towers:
                     towers_modules += floors_modules
                     towers_names.append(tower_name)
                 tower_name = None
@@ -296,7 +298,7 @@ def _detect_main_towers(model, min_floors = 5):
                 tower_name = submodule_name[ :-1]  
                 floors_modules.append(submodule)
 
-    if len(floors_modules) >= min_floors:
+    if len(floors_modules) >= min_floors or floors_modules and tower_name.rstrip(".") in extra_towers:
         towers_modules += floors_modules
         towers_names.append(tower_name)
 
@@ -518,6 +520,15 @@ def _make_parameter(tensor, requires_grad=False):
             return torch.nn.Parameter(tensor, requires_grad=requires_grad)
     return torch.nn.Parameter(tensor, requires_grad=requires_grad)
 
+_graph_serials = itertools.count(1)
+
+def _graph_serial(tensor):
+    # a number given once to a tensor object, never reused: the CUDA graph keys of the blocks name their tensors by it
+    serial = tensor.__dict__.get("_mm_graph_serial", None)
+    if serial is None:
+        serial = tensor._mm_graph_serial = next(_graph_serials)
+    return serial
+
 def _install_tensor(module, name, tensor):
     # registers the way nn.Module._apply does: no wrapper object, no __setattr__ checks, and a buffer keeps its persistence
     if name in module._parameters:
@@ -532,7 +543,7 @@ def _unwrap_quantized_tensor(tensor):
 
 def _qtensor_get_quantized_subtensors(self):
     subtensors = []
-    if getattr(self, "_qtype", None) == qint4:
+    if getattr(self, "_qtype", None) in (qint2, qint4):
         data = _unwrap_quantized_tensor(self._data)
         subtensors.append(("data", data))
         if hasattr(self, "_scale_shift") and self._scale_shift is not None:
@@ -564,7 +575,7 @@ def _qtensor_set_quantized_subtensors(self, sub_tensors):
         else:
             self._data = data
 
-    if getattr(self, "_qtype", None) == qint4:
+    if getattr(self, "_qtype", None) in (qint2, qint4):
         if "scale_shift" in sub_map and sub_map["scale_shift"] is not None:
             self._scale_shift = sub_map["scale_shift"]
         else:
@@ -1460,7 +1471,7 @@ def _welcome():
     if welcome_displayed:
          return 
     welcome_displayed = True
-    print(f"{BOLD}{HEADER}************ Memory Management for the GPU Poor (mmgp 4.0.0) by DeepBeepMeep ************{ENDC}{UNBOLD}")
+    print(f"{BOLD}{HEADER}************ Memory Management for the GPU Poor (mmgp 4.1.0) by DeepBeepMeep ************{ENDC}{UNBOLD}")
 
 def change_dtype(model, new_dtype, exclude_buffers = False):
     for submodule_name, submodule in model.named_modules():  
@@ -2571,19 +2582,22 @@ def flush_torch_caches():
                 kernel32.CloseHandle(handle)
         except Exception:
             pass
-    from accelerate import init_empty_weights
-    with init_empty_weights():
-        try:
-            for _ in range(3):
-                dummy_tensor = torch.nn.Embedding(256384, 1024)
-                dummy_tensor = None    
-        except Exception:
-            pass
-        dummy_tensor = None    
+    from .allocator import ram
+    if not ram.active:  # with PyTorch's CPU allocator: large dummy allocations push it to give freed memory back
+        from accelerate import init_empty_weights
+        with init_empty_weights():
+            try:
+                for _ in range(3):
+                    dummy_tensor = torch.nn.Embedding(256384, 1024)
+                    dummy_tensor = None
+            except Exception:
+                pass
+            dummy_tensor = None
 
     if torch.cuda.is_available():
         gc.collect()
         torch.cuda.empty_cache()
+    ram.release()  # the MMGP RAM allocator's freed blocks go back to the system
 
 
 def map_state_dict(state_dict, rules):
@@ -2817,7 +2831,6 @@ def load_model_data(model, file_path, do_quantize = False, quantizationType = qi
                 quantization_map = quantization_map or {}
                 quantization_map.update(conv_result["quant_map"])
                 conv_result = None
-                # enable_fp8_fp32_scale_support()
 
             if detected_kind in (None, "none") and isinstance(file, str) and (".safetensors" in file or ".sft" in file):
                 try:
@@ -3341,6 +3354,9 @@ class offload:
         self.learned_links = set() # blocks whose next block is the one that came next when they last ran: the ends of the towers
         self.auto_preload = None # with autoPreload, the plans of the models whose preload follows the VRAM left by their workloads
         self.auto_preload_requested = False
+        self.cuda_graphs = {} # model id -> the CUDA graphs of the blocks of its towers (cudaGraphs)
+        self.expert_residency = {}
+        self.expert_hooks = []
 
         global last_offload_obj
         last_offload_obj = self
@@ -3450,7 +3466,14 @@ class offload:
             consumer.wait_event(transfer if isinstance(transfer, torch.cuda.Event) else transfer.result())
             self._ensure_loras(model_id, entry_name)
         else:
-            self._transfer(consumer, entry_name, cpu_to_gpu)
+            if self.shared_weight_stream:
+                # Demand copies share the prefetch buffers' allocator heap. Order reuse after earlier compute and wait only for the
+                # copy needed by this consumer; neither dependency synchronizes the host or the whole device.
+                self.transfer_stream.wait_stream(consumer)
+                transfer = self._transfer(self.transfer_stream, entry_name, cpu_to_gpu)
+                consumer.wait_event(transfer if isinstance(transfer, torch.cuda.Event) else transfer.result())
+            else:
+                self._transfer(consumer, entry_name, cpu_to_gpu)
         next_entry = entry_name
         for _ in range(self.prefetch_windows[model_id]):
             prev_entry, next_entry = next_entry, self.next_blocks_names.get(next_entry, None)
@@ -3640,9 +3663,11 @@ class offload:
                 kind_entries = entries(model_id, kind)
                 need = builtins.sum(sizes[entry] for entry in kind_entries) * share
                 whole = kind == "base" and not any(entry.startswith(model_id + "/") for entry in tensors) # pinned as far as it fits, in order
-                ratio = share if whole or need <= budget else max(0, share * budget / need)
+                ratio = share if need == 0 or whole or need <= budget else max(0, share * budget / need)
                 for entry in _spread(kind_entries, ratio):
-                    budget -= sizes[entry]
+                    if not whole and sizes[entry] > budget:
+                        continue
+                    budget = max(0, budget - sizes[entry])
                     taken.add(entry)
                     ranks[model_id].update((id(p), rank) for p in tensors[entry])
             return ranks, taken
@@ -3746,6 +3771,48 @@ class offload:
                 for i in range(min(4, len(moved_data))):
                     moved_data[i] = _resolve_alias(moved_data[i], adapter)
                 lora_module[key] = moved_data
+
+    def _graph_weight_tensors(self, model, module):
+        """The CUDA tensors a block reads besides its arguments and LoRA copies: its parameters and buffers (their quantized parts and the
+        tensors cached on them, e.g. converted scales)."""
+        for tensor in builtins.list(module.parameters()) + builtins.list(module.buffers()):
+            subtensors = _get_quantized_subtensors(tensor)
+            yield from (t for _, t in subtensors) if subtensors else (tensor,)
+            yield from (_unwrap_quantized_tensor(value) for value in tensor.__dict__.values() if torch.is_tensor(value))
+
+    def _graph_state(self, model, module):
+        # per block, for its active adapters: the holders of its tensors (parameter and buffer dictionaries), the LoRA dictionaries with the
+        # key of their GPU copies, then the weak references and the key of _graph_weights_key
+        adapters = builtins.tuple(getattr(model, "_loras_active_adapters", None) or ())
+        state = module.__dict__.get("_mm_graph_state", None)
+        if state is None or state[0] != adapters:
+            submodules = builtins.list(module.modules())
+            holders = [(sub._parameters, name) for sub in submodules for name in sub._parameters] + [(sub._buffers, name) for sub in submodules for name in sub._buffers]
+            loras = [(sub._mm_lora_data, adapter + "_GPU") for sub in submodules if getattr(sub, "_mm_lora_data", None) for adapter in adapters]
+            state = module._mm_graph_state = [adapters, holders, loras, None, None]
+        return state
+
+    def _graph_weights_key(self, model, module):
+        """What a block's graph depends on besides its arguments and LoRA copies: its parameters and buffers, the active adapters and their
+        scalings. A block loaded elsewhere gets new tensor objects (and the caches made on them, e.g. converted scales): the key is their serial
+        numbers, never reused, recomputed only when a weak reference shows another object, which keeps the check of each call short."""
+        state = self._graph_state(model, module)
+        adapters, holders, _, refs, key = state
+        current = [holder[name] for holder, name in holders]
+        if refs is None or len(refs) != len(current) or any((ref() if ref is not None else None) is not t for ref, t in zip(refs, current)):
+            state[3] = [None if t is None else weakref.ref(t) for t in current]
+            key = state[4] = builtins.tuple(None if t is None else _graph_serial(t) for t in current)
+        return key, adapters, builtins.tuple(self._get_lora_scaling(model._loras_scaling, model, adapter) for adapter in adapters)
+
+    def _graph_ready(self, model_id):
+        # the weights are where they stay: the automatic preload does not measure a new workload (it may keep other blocks after it)
+        return self.auto_preload is None or self.auto_preload.settled(model_id)
+
+    def _graph_lora_inputs(self, model, module):
+        """The LoRA copies that a block reads, as (list, index): its graphs read them from buffers filled before each replay, so that they come
+        and go with their block as without CUDA graphs."""
+        return [(data, index) for holder, name in self._graph_state(model, module)[2] for data in (holder.get(name, None),) if data is not None
+                for index in range(min(4, len(data))) if torch.is_tensor(data[index])]
 
     def _ensure_loras(self, model_id, entry_name):
         # A prefetched block got the LoRA copies of the step and adapters current when it was transferred: the last block of a forward
@@ -3965,6 +4032,9 @@ class offload:
             self.read_jobs.clear()
             self.read_plans.clear()
         torch.cuda.synchronize() # blocks may still be read or written by queued work
+        for model_id, residency in self.expert_residency.items():
+            if model_id not in keep:
+                residency.unload()
         if self.ring is not None:
             self.ring.reset()
         for model_id in self.active_models_ids:
@@ -3990,6 +4060,9 @@ class offload:
             self.auto_preload.on_unload([model_id for model_id in self.active_models_ids if model_id not in keep])
         for model_id in [model_id for model_id in self.block_slots if model_id not in keep]:
             del self.block_slots[model_id]
+        for model_id, graphs in self.cuda_graphs.items():
+            if model_id not in keep:
+                graphs.clear()
         self.slot_views = {key: views for key, views in self.slot_views.items() if key[0].split("/", 1)[0] in self.block_slots}
         self.active_models_ids = [model_id for model_id in self.active_models_ids if model_id in keep]
         self.active_models = [self.models[model_id] for model_id in self.active_models_ids]
@@ -4235,7 +4308,7 @@ class offload:
             if any_dora and any_lokr:
                 break
 
-        dtype = weight.dtype
+        dtype = submodule.__dict__.get("_mm_weight_dtype", None) or weight.dtype # cached by _mm_lora_linear_forward: a quantized weight's dtype costs a Python dispatch
         if any_dora and not any_lokr: # sum base weight and lora matrices instead of applying input on each sub lora matrice if input is too large. This will save a lot VRAM and compute
             original_bias = True
             if isinstance(submodule, QModuleMixin):
@@ -4284,11 +4357,10 @@ class offload:
 
             if active_adapters:
                 compute_dtype = result.dtype
-                if result.dtype != compute_dtype:
-                    result = result.to(compute_dtype)
-                x = x.to(compute_dtype)
-                x_2d = x.reshape(-1, x.shape[-1])
-                result_2d = result.reshape(-1, result.shape[-1])
+                if x.dtype != compute_dtype:
+                    x = x.to(compute_dtype)
+                x_2d = x if x.dim() == 2 else x.reshape(-1, x.shape[-1])
+                result_2d = result if result.dim() == 2 else result.reshape(-1, result.shape[-1])
 
                 for active_adapter in active_adapters:
                     data = loras_data.get(active_adapter + '_GPU', None)
@@ -4357,7 +4429,7 @@ class offload:
         loras_model_shortcuts[submodule_name] = loras_data
         loras_model_data[submodule] = loras_data
         submodule._mm_lora_data = loras_data
-        submodule._mm_lora_model = current_model
+        submodule.__dict__["_mm_lora_model"] = current_model # not registered as a submodule, which would put the whole model under each LoRA linear
         submodule._mm_lora_old_forward = old_forward
 
         if isinstance(submodule,  torch.nn.Linear) or getattr(submodule, "is_nvfp4", False):
@@ -4566,7 +4638,8 @@ def {fname}(module, *args, **kwargs):
         # smooths the transfers between the preloaded blocks without VRAM beyond the budget, 1 otherwise
         largest = max(max_floor_size for _, max_floor_size, _ in towers)
         def preload_counts(budget):
-            return [int(tower_size / total_size * max(0, budget) / max_floor_size) for _, max_floor_size, tower_size in towers]
+            # a parameter-free tower (e.g. a ModuleList of Identity modules) has nothing to preload
+            return [int(tower_size / total_size * max(0, budget) / max_floor_size) if tower_size > 0 else 0 for _, max_floor_size, tower_size in towers]
         window = self.prefetch_window
         if window is None:
             window = 2 if builtins.sum(preload_counts(current_budget - 3 * largest)) > 0 else 1
@@ -4624,6 +4697,16 @@ def {fname}(module, *args, **kwargs):
             return
 
         self.unload_all()
+        for handle in self.expert_hooks:
+            handle.remove()
+        self.expert_hooks.clear()
+        for residency in self.expert_residency.values():
+            residency.close()
+        self.expert_residency.clear()
+        if self.cuda_graphs:
+            from .cuda_graphs import release
+            release(self.cuda_graphs.values())
+            self.cuda_graphs = {}
         if self.auto_preload is not None:
             self.auto_preload.close()
             self.auto_preload = None
@@ -4660,6 +4743,7 @@ def {fname}(module, *args, **kwargs):
             model = None
 
         self.models = None            
+        runtime._unregister(self)
 
         if last_offload_obj == self:
             last_offload_obj = None
@@ -4718,16 +4802,11 @@ class LoadingCallback:
         self.check_abort()
 
 
-def all(pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLora = False, partialPinning = False, loras = None, quantizeTransformer = True,  extraModelsToQuantize = None, quantizationType = qint8, budgets= 0, workingVRAM = None, asyncTransfers = True, compile = False, convertWeightsFloatTo = torch.bfloat16, perc_reserved_mem_max = 0, coTenantsMap = None, vram_safety_coefficient = 0.8, compile_mode ="default", verboseLevel = -1, loading_callback=None, prefetchWindow = None, smartPinning = None, readAhead = False, autoPreload = False):
+def all(pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLora = False, partialPinning = False, loras = None, quantizeTransformer = True,  extraModelsToQuantize = None, quantizationType = qint8, budgets= 0, workingVRAM = None, asyncTransfers = True, compile = False, convertWeightsFloatTo = torch.bfloat16, perc_reserved_mem_max = 0, coTenantsMap = None, vram_safety_coefficient = 0.8, compile_mode ="default", verboseLevel = -1, loading_callback=None, prefetchWindow = None, smartPinning = None, readAhead = False, autoPreload = False, cudaGraphs = False, preloadExperts = True):
     """Configure offloading, optionally reporting phases and accepting cancellation."""
     global total_pinned_bytes, max_pinnable_bytes, last_offload_obj
-    kwargs = locals().copy()
-    previous_pinnable_limit = max_pinnable_bytes
-    try:
-        previous_device = torch.get_default_device()
-    except (AttributeError, Exception):
-        previous_device = torch.device("cpu")
-    previous_offload = last_offload_obj
+    device_context = getattr(torch._GLOBAL_DEVICE_CONTEXT, "device_context", None)
+    previous_device, previous_offload = None if device_context is None else getattr(device_context, "device", None), last_offload_obj
     self = offload()
     try:
         return _configure(self, **kwargs)
@@ -4745,8 +4824,7 @@ def all(pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLora = False, p
         raise error from None
 
 
-
-def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLora = False, partialPinning = False, loras = None, quantizeTransformer = True,  extraModelsToQuantize = None, quantizationType = qint8, budgets= 0, workingVRAM = None, asyncTransfers = True, compile = False, convertWeightsFloatTo = torch.bfloat16, perc_reserved_mem_max = 0, coTenantsMap = None, vram_safety_coefficient = 0.8, compile_mode ="default", verboseLevel = -1, loading_callback=None, prefetchWindow = None, smartPinning = None, readAhead = False, autoPreload = False):
+def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLora = False, partialPinning = False, loras = None, quantizeTransformer = True,  extraModelsToQuantize = None, quantizationType = qint8, budgets= 0, workingVRAM = None, asyncTransfers = True, compile = False, convertWeightsFloatTo = torch.bfloat16, perc_reserved_mem_max = 0, coTenantsMap = None, vram_safety_coefficient = 0.8, compile_mode ="default", verboseLevel = -1, loading_callback=None, prefetchWindow = None, smartPinning = None, readAhead = False, autoPreload = False, cudaGraphs = False, preloadExperts = True):
     """Hook to a pipeline or a group of modules in order to reduce their VRAM requirements:
     pipe_or_dict_of_modules : the pipeline object or a dictionary of modules of the model
     quantizeTransformer: set True by default will quantize on the fly the video / image model
@@ -4754,6 +4832,10 @@ def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLo
     extraModelsToQuantize: a list of models to be also quantized on the fly (e.g the text_encoder), useful to reduce bith RAM and VRAM consumption
     convertWeightsFloatTo: default dtype for remaining FP32 parameters. A model-level _convertWeightsFloatTo overrides it; None preserves FP32.
     budgets: 0 by default (unlimited). If non 0, it corresponds to the maximum size in MB that every model will occupy at any moment
+    preloadExperts: with an explicit budget, use its remaining space for individual GPU experts after ordinary blocks. Dynamic
+        preload applies the same priority independently. False keeps experts on CPU for fixed-budget execution. With pinnedMemory=True,
+        the reserved RAM the models leave also holds pinned copies of the experts that can go to the GPU, most used first, so that
+        placing them is a plain transfer; the experts that stay on the CPU are never pinned.
         (in fact the real usage is twice this number). It is very efficient to reduce VRAM consumption but this feature may be very slow
         if pinnedMemory is not enabled
     vram_safety_coefficient: float between 0 and 1 (exclusive), default 0.8. Sets the maximum portion of VRAM that can be used for models.
@@ -4769,6 +4851,11 @@ def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLo
         transfers, not compiled) keep in VRAM as many of their blocks as the VRAM left by the activations of each workload allows, measured
         during its first cycle; the preload of their budget applies to the workloads not measured yet. True keeps the measures for the
         process, a dictionary keeps them in it (e.g. tied to a model definition, measured again when it changes). See mmgp.auto_preload.
+    cudaGraphs: False by default. True or model ids: the blocks of the towers of these models replay CUDA graphs in the scopes their code
+        opens (mmgp.cuda_graphs.scope, e.g. around the denoising loop), which removes most of the host work of short steps. A block has a
+        graph per location of its weights (kept in VRAM, or each slot of the swapped blocks); its LoRA copies come and go with it as without
+        graphs, copied before each replay into buffers that its graphs read.
+        See mmgp.cuda_graphs for the contract of a block call.
     smartPinning: None by default. Minimum pinning of the models processed block by block (with a budget) that pinnedMemory does not pin:
         with asyncTransfers, 0 copies their blocks ahead through a staging ring of reserved RAM (RING_DEFAULT_BLOCKS of the largest such
         blocks, copied by a background thread, then transferred like pinned blocks), n > 0 also pins 1 block in n of them, spread evenly.
@@ -4806,6 +4893,7 @@ def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLo
     self.prefetch_window = prefetchWindow
     self.read_ahead_enabled = readAhead
     from . import allocator as vram_allocator
+    self.shared_weight_stream = vram_allocator.active == "vmm"
     auto_measures = autoPreload if isinstance(autoPreload, dict) else None
     autoPreload = autoPreload is True or auto_measures is not None
     if autoPreload and vram_allocator.active != "vmm":
@@ -4875,6 +4963,7 @@ def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLo
         modelsToCompile = [compile]
 
     self.anyCompiledModule = compileAllModels or len(modelsToCompile)>0
+    graphed_models = [] if isinstance(cudaGraphs, bool) else cudaGraphs if isinstance(cudaGraphs, list) else [cudaGraphs]
     if self.anyCompiledModule:
         torch.compiler.reset()
         torch._dynamo.config.cache_size_limit = 10000
@@ -4894,6 +4983,10 @@ def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLo
         if loading_callback is not None: loading_callback.report(phase, phase_no, phase_total, model_id)
         phase_no += 1
 
+    from . import experts
+    expert_banks = {model_id: experts.banks(model) for model_id, model in models.items()}
+    expert_exclusions = {model_id: experts.excluded_names(model) for model_id, model in models.items() if expert_banks[model_id]}
+    expert_budgets = {}
     listed = {model_id: pinAllModels or model_id in modelsToPin for model_id in models} # the models to pin, as far as the reserved RAM allows
     if not asyncTransfers:
         smartPinning = None # the staging ring needs asynchronous transfers
@@ -4946,6 +5039,9 @@ def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLo
             # do not convert 32 bits float to 16 bits since buffers are few (and potential gain low) and usually they are needed for precision calculation (for instance Rope)
             current_model_size +=  torch.numel(b.data) * b.data.element_size()
 
+        # Optional GPU expert copies have their own, lower-priority residency budget.
+        current_model_size -= builtins.sum(bank.num_experts * bank.expert_nbytes for bank in expert_banks[model_id].values())
+
         model_budget = model_budgets[model_id] if model_id in model_budgets else budget
         if workingVRAM != None:
             model_minimumVRAM = -1
@@ -4961,6 +5057,7 @@ def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLo
                 new_budget = self.device_mem_capacity -  model_minimumVRAM
                 new_budget = 1 if new_budget  < 0 else new_budget
                 model_budget =  new_budget if model_budget == 0 or new_budget < model_budget else model_budget
+        expert_budgets[model_id] = model_budget if preloadExperts else 0
         if  model_budget > 0 and model_budget > current_model_size:
             model_budget = 0
         coef =vram_safety_coefficient
@@ -4976,13 +5073,23 @@ def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLo
         
         model_budgets[model_id] = model_budget
 
+    runtime._register(self, models)
+
     #  Hook forward methods of modules 
     for model_id in models: 
         if loading_callback is not None: loading_callback.check_abort()
         current_model: torch.nn.Module = models[model_id] 
         current_model._force_device= "cuda"
-        towers_names, towers_modules = _detect_main_towers(current_model)
+        # Short recurrent stacks can explicitly join the graph/offload plan so their larger blocks do not discard the fixed weight slots.
+        graph_towers = getattr(current_model, "_cuda_graph_towers", ()) if cudaGraphs is True or model_id in graphed_models else ()
+        towers_names, towers_modules = _detect_main_towers(current_model, extra_towers=graph_towers)
         compilationInThisOne = compileAllModels or model_id in modelsToCompile
+        graphs = None
+        if (cudaGraphs is True or model_id in graphed_models) and towers_modules:
+            from .cuda_graphs import BlockGraphs
+            graphs = self.cuda_graphs[model_id] = BlockGraphs(model_id, functools.partial(self._graph_weights_key, current_model), functools.partial(self._graph_weight_tensors, current_model),
+                                                              functools.partial(self._graph_lora_inputs, current_model), functools.partial(self._graph_ready, model_id))
+            towers_set = set(towers_modules)
 
         loading_phase("Hooks and LoRA Slots", model_id)
         current_budget = getattr(current_model, "_budget", model_budgets[model_id])
@@ -4997,6 +5104,8 @@ def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLo
         # modules that the model loads only while they run (e.g. an LLM's token embedding and output head, used for a prompt but not to denoise)
         separate_blocks = tuple(getattr(current_model, "_offload_separate_blocks", ())) if current_budget > 0 else ()
         for submodule_name, submodule in current_model.named_modules():
+            if submodule_name in expert_exclusions.get(model_id, ()):
+                continue
             # create a fake 'accelerate' parameter so that the _execution_device property returns always "cuda" 
             # (it is queried in many pipelines even if offloading is not properly implemented)  
             if not hasattr(submodule, "_hf_hook"):
@@ -5037,6 +5146,8 @@ def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLo
                     submodule_method = self.hook_lora(submodule, current_model, model_id, loras_model_data, loras_model_shortcuts, submodule_name)                
                 else:
                     submodule_method = getattr(submodule, submodule_method_name)
+                if graphs is not None and submodule_method_name == "forward" and submodule in towers_set and not getattr(submodule, "_cuda_graph_segments", False):
+                    submodule_method = graphs.wrap(submodule, submodule_method)
                 if callable(submodule_method):
                     if top_submodule and blocks_name is None and any_lora and len(submodule._parameters):
                         pass
@@ -5103,7 +5214,22 @@ def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLo
     if auto_models: # before pinning, which pins first the blocks that are not preloaded
         from .auto_preload import AutoPreload
         self.auto_preload = AutoPreload(self, auto_models, verboseLevel, auto_measures)
+    for model_id, banks in expert_banks.items():
+        if not banks:
+            continue
+        residency = experts.Residency(self, model_id, banks, expert_budgets[model_id], autoPreload)
+        self.expert_residency[model_id] = residency
+        def prepare_experts(module, args, model_id=model_id, residency=residency):
+            self.ensure_model_loaded(model_id)
+            # Dynamic block plans coordinate experts after their ordinary blocks.
+            if self.auto_preload is None or model_id not in self.auto_preload.plans:
+                residency.prepare()
+        self.expert_hooks.append(self.models[model_id].register_forward_pre_hook(prepare_experts))
     self._pin_models(listed, smartPinning, partialPinning, pinnedPEFTLora, perc_reserved_mem_max, max_reservable_memory, verboseLevel, loading_callback)
+    if pinAllModels: # after the models' own pinning, which has priority for the reserved RAM
+        for model_id, residency in self.expert_residency.items():
+            residency.pin(lambda module, name: _pin_to_memory(module, name, perc_reserved_mem_max=perc_reserved_mem_max, verboseLevel=verboseLevel,
+                                                              loading_callback=loading_callback, readAhead=self.read_ahead_enabled))
     if self.auto_preload is not None:
         self.auto_preload.after_pinning() # the blocks left unpinned are the first to keep in VRAM
     self.read_ahead = ReadAhead.create(readAhead)
@@ -5130,12 +5256,12 @@ def profile(pipe_or_dict_of_modules, profile_no: profile_type =  profile_type.Ve
     """Apply a configuration profile that depends on your hardware:
     pipe_or_dict_of_modules : the pipeline object or a dictionary of modules of the model
     profile_name : num of the profile:
-        HighRAM_HighVRAM (=1): each model loaded whole in VRAM, all models kept in reserved RAM. The fastest generations and model
-            switches, needs the most RAM and VRAM
+        HighRAM_HighVRAM (=1): profile 2 with automatic VRAM preload. All models kept in reserved RAM; keep as many blocks as fit
+            beside the measured workload in VRAM, streaming the rest
         HighRAM_LowVRAM (=2): all models kept in reserved RAM, sent to the GPU part by part. Runs models larger than the VRAM, leaves VRAM
             for long videos or large images and switches models fast, needs a lot of RAM
-        LowRAM_HighVRAM (=3): each model loaded whole in VRAM, only the main model ('transformer') kept in reserved RAM. Fast
-            generations with less RAM, needs enough VRAM for the whole model
+        LowRAM_HighVRAM (=3): profile 4 with automatic VRAM preload. Only the main model ('transformer') kept in reserved RAM;
+            keep as many blocks as fit beside the measured workload in VRAM, streaming the rest
         LowRAM_LowVRAM (=4): only the main model ('transformer') kept in reserved RAM, sent to the GPU part by part. The most versatile:
             runs models larger than the VRAM and leaves VRAM for long videos or large images
         VerylowRAM_LowVRAM (=5): no reserved RAM (only a small staging ring with smartPinning), all models sent to the GPU part by
@@ -5187,7 +5313,7 @@ def profile(pipe_or_dict_of_modules, profile_no: profile_type =  profile_type.Ve
 
     if profile_no == profile_type.HighRAM_HighVRAM:
         pinnedMemory= True
-        budgets = None
+        budgets["*"] = 3000
         # info = "You have chosen a profile that may require 48 GB of RAM and up to 24 GB of VRAM on some applications."
     elif profile_no == profile_type.HighRAM_LowVRAM:
         pinnedMemory= True
@@ -5196,7 +5322,7 @@ def profile(pipe_or_dict_of_modules, profile_no: profile_type =  profile_type.Ve
     elif profile_no == profile_type.LowRAM_HighVRAM:
         pinnedMemory= "transformer"
         extraModelsToQuantize = default_extraModelsToQuantize
-        budgets = None
+        budgets["*"] = 3000
         # info = "You have chosen a Medium speed profile that may require 32 GB of RAM and up to 24 GB of VRAM on some applications."
     elif profile_no == profile_type.LowRAM_LowVRAM:
         pinnedMemory= "transformer"
@@ -5220,6 +5346,9 @@ def profile(pipe_or_dict_of_modules, profile_no: profile_type =  profile_type.Ve
 
     CrLf = '\r\n'
     kwargs = { "pinnedMemory": pinnedMemory,  "extraModelsToQuantize" : extraModelsToQuantize, "budgets": budgets, "asyncTransfers" : asyncTransfers, "quantizeTransformer": quantizeTransformer, "prefetchWindow": prefetchWindow }
+    kwargs["preloadExperts"] = "budgets" in overrideKwargs
+    if profile_no in (profile_type.HighRAM_HighVRAM, profile_type.LowRAM_HighVRAM):
+        kwargs["autoPreload"] = True
 
     if verboseLevel>=2:
         info = info  + f"Profile '{profile_type.tostr(profile_no)}' sets the following options:" #CrLf 
