@@ -17,5 +17,6 @@
     "guidance_scale": 4.0,
     "batch_size": 1,
     "remove_background_images_ref": 0,
+    "override_profile": -1,
     "prompt_enhancer": ""
 }
