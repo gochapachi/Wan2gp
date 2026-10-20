@@ -36,8 +36,8 @@ set GRADIO_MCP_SERVER=True
 echo Starting Wan2GP from: %APP_DIR%
 echo.
 
-REM Run the app via setup.py (uses envs.json to find the active environment)
-"%PYTHON_EXE%" setup.py run
+REM Run the app via wgp.py
+"%PYTHON_EXE%" wgp.py
 
 REM Keep window open on error
 if errorlevel 1 (
