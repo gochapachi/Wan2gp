@@ -39,6 +39,10 @@ ATTENTION_MODE_AVAILABILITY = {
         "installed": triton_installed,
         "supported": triton_installed and major >= 8 and not torch.version.hip,
     },
+    "vsa": {
+        "installed": triton_installed,
+        "supported": triton_installed and major >= 8 and not torch.version.hip,
+    },
 }
 
 
@@ -372,6 +376,15 @@ def attention_config_shared_state(attention_mode=None, resolver=resolve_attentio
         else:
             offload.shared_state["_attention"] = previous
 
+def _sparge_core():
+    """shared.spas_sage_attn_core when the SpargeAttn package and its kernels import, else None."""
+    try:
+        from shared import spas_sage_attn_core
+    except Exception:
+        return None
+    return spas_sage_attn_core
+
+
 def sage_staged(device, head_dim, force_attention=None, masked=False):
     """(core, settings) of the staged_* functions (q, k and v quantized as soon as each is computed) of the SageAttention that
     pay_attention would run without sequence lengths on this device (with this force_attention, and a mask when masked):
@@ -382,8 +395,14 @@ def sage_staged(device, head_dim, force_attention=None, masked=False):
     if attn == "veda":
         attn = offload.shared_state.get("_attention_fallback") or get_default_attention_mode()
     attn = get_default_attention_mode() if attn in ("sol", "vdn") else attn
+    if attn == "sparge":  # FlashVSR's SpargeAttn block-sparse kernels over a per-group block map (shared.spas_sage_attn_core)
+        core = _sparge_core() if masked else None
+        settings = core.staged_settings(device, head_dim) if core is not None else None
+        return None if settings is None else (core, settings)
     if attn == "sage":
-        return None if masked or sage1_core is None or head_dim not in sage1_core.head_dims(device) else (sage1_core, sage1_core.SCALED_V_SETTINGS if scale_v else sage1_core.SETTINGS)
+        if sage1_core is None or head_dim not in sage1_core.head_dims(device) or masked and not sage1_core.masks_supported(device):
+            return None
+        return sage1_core, sage1_core.SCALED_V_SETTINGS if scale_v else sage1_core.SETTINGS
     if attn not in ("sage2", "radial") or sageattn2 is None or masked and sageattn_attention_mask_support_reason(device=device) is not None:
         return None
     settings = sage2_core.staged_settings(device, masked, scale_v, head_dim)
@@ -440,7 +459,7 @@ def pay_attention(
         raise ValueError("pay_attention received both attention_mask and causal=True; build a combined mask once and pass causal=False.")
     if attention_mask != None:
         requested_attn = offload.shared_state["_attention"] if force_attention == None else force_attention
-        if requested_attn == "veda":
+        if requested_attn in ("veda", "vsa"):
             requested_attn = offload.shared_state.get("_attention_fallback") or get_default_attention_mode()
         requested_attn = get_default_attention_mode() if requested_attn in ("sol", "vdn") else requested_attn
         requested_attn = "sage2" if requested_attn == "radial" else requested_attn
@@ -451,6 +470,9 @@ def pay_attention(
             support_reason = sageattn_attention_mask_support_reason(qkv_list, attention_mask, tensor_layout="NHD")
         if requested_attn == "sage2" and support_reason is None and sageattn2 != None and q_lens == None and k_lens == None:
             force_attention = "sage2"
+        elif (requested_attn == "sage" and sage1_core is not None and q_lens == None and k_lens == None and softmax_scale is None
+              and qkv_list[0].shape[-1] in sage1_core.head_dims(qkv_list[0].device) and sage1_core.masks_supported(qkv_list[0].device)):
+            force_attention = "sage"  # the Turing kernel takes the mask (sage_rows below)
         else:
             force_attention = "sdpa"
             if requested_attn != "sdpa" and not _MASKED_ATTENTION_SDPA_WARNED:
@@ -460,14 +482,16 @@ def pay_attention(
         if  attention_mask.dtype == torch.bfloat16 and not bfloat16_supported:
             attention_mask = attention_mask.to(torch.float16)
     attn = offload.shared_state["_attention"] if force_attention== None else force_attention
-    if attn == "veda":
+    if attn in ("veda", "vsa"):
         attn = offload.shared_state.get("_attention_fallback") or get_default_attention_mode()
     attn = get_default_attention_mode() if attn in ("sol", "vdn") else attn
 
     q,k,v = qkv_list
     qkv_list.clear()
     out_dtype = q.dtype
-    if q.dtype == torch.bfloat16 and not bfloat16_supported:
+    # SageAttention on every batch item with all its tokens: its kernels without its device sync (CUDA graphs can record them)
+    sage_rows = attn == "sage" and q_lens == None and k_lens == None and not causal and softmax_scale is None and q.shape[-1] in sage1_core.head_dims(q.device)
+    if q.dtype == torch.bfloat16 and not bfloat16_supported and not sage_rows:  # sage1_core converts what its kernels need
         q = q.to(torch.float16)
         k = k.to(torch.float16)
         v = v.to(torch.float16)
@@ -534,8 +558,6 @@ def pay_attention(
             'Flash attention 3 is not available, use flash attention 2 instead.'
         )
 
-    # SageAttention on every batch item with all its tokens: its kernels without its device sync (CUDA graphs can record them)
-    sage_rows = attn == "sage" and q_lens == None and k_lens == None and not causal and softmax_scale is None and q.shape[-1] in sage1_core.head_dims(q.device)
     if attn == "sage" and not sage_rows and q.shape[-1] > 128:  # sageattn_varlen stops at 128, and 256 needs compute capability 8.0
         if not _HEAD_DIM_SDPA_WARNED:
             tqdm.write(f"[WAN2GP] SageAttention does not support this attention (head_dim {q.shape[-1]}): it will use SDPA.")
@@ -570,7 +592,8 @@ def pay_attention(
     if sage_rows:
         qkv_list = [t.reshape(-1, *t.shape[2:]).view(t.shape) for t in (q, k, v)]  # batch items one after another (copies only otherwise)
         del q, k, v
-        x = sage1_core.attention(qkv_list, recycle_q, offload.shared_state.get("_sage_v_scaling", False))
+        x = sage1_core.attention(qkv_list, recycle_q, offload.shared_state.get("_sage_v_scaling", False),
+                                 None if attention_mask is None else sage_attention_mask(attention_mask, out_dtype))
     elif attn=="sage":
         x = sageattn_varlen_wrapper(
             q=q,
