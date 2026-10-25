@@ -14467,6 +14467,10 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
 
     # Guard: reference mode without usable reference images (all downloads may have failed).
     usable_refs = [ref for ref in (image_refs or []) if ref is not None] if isinstance(image_refs, list) else ([image_refs] if image_refs else [])
+    if (not video_prompt_type or video_prompt_type == "Video Prompt") and len(usable_refs) > 0:
+        if base_model_type in ["minimax_h3_ref2va", "minimax_h3_ref2va_pruned", "minimax_h3_ref2va_veda"] or model_def.get("architecture") in ["minimax_h3_ref2va", "minimax_h3_ref2va_pruned"]:
+            video_prompt_type = "I"
+            print(f"[n8n API] [{request_id}] Auto-detected Ref2VA model with image_refs: set video_prompt_type='I'")
     if "I" in str(video_prompt_type or "") and len(usable_refs) == 0:
         print(f"[n8n API] [{request_id}] WARNING: video_prompt_type='{video_prompt_type}' needs reference images but none are usable. Falling back to text-to-image.")
         video_prompt_type = str(video_prompt_type).replace("I", "").replace("K", "")
@@ -14677,6 +14681,242 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
         traceback.print_exc()
         return f"Error: {e}"
 
+
+
+
+outputs_dir = os.path.join(os.getcwd(), "outputs")
+os.makedirs(outputs_dir, exist_ok=True)
+
+def mount_n8n_and_outputs(app):
+    from fastapi.staticfiles import StaticFiles
+    try:
+        app.mount("/outputs", StaticFiles(directory=outputs_dir), name="outputs")
+        print("[n8n API] Successfully mounted /outputs")
+    except Exception as e:
+        print(f"[n8n API] Notice mounting /outputs: {e}")
+
+    @app.get("/n8n/health")
+    @app.get("/api/n8n/health")
+    async def n8n_health_endpoint():
+        return {"status": "ok", "version": WanGP_version, "service": "Wan2GP"}
+
+    @app.get("/n8n/models")
+    @app.get("/api/n8n/models")
+    async def n8n_models_endpoint():
+        try:
+            models_list = []
+            for model_type, model_def in models_def.items():
+                if model_def.get("visible", True):
+                    models_list.append({
+                        "id": model_type,
+                        "name": model_def.get("name", model_type),
+                        "family": model_def.get("group", "unknown"),
+                        "resolution": model_def.get("resolution", "unknown")
+                    })
+            models_list.sort(key=lambda x: x["name"])
+            return {"models": models_list}
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return JSONResponse(status_code=500, content={"error": str(e)})
+
+    @app.post("/n8n/sync")
+    @app.post("/api/n8n/sync")
+    @app.post("/api/n8n/generate")
+    @app.post("/n8n/generate")
+    async def n8n_sync_endpoint(request: Request):
+        global n8n_request_counter
+        try:
+            with api_jobs_lock:
+                n8n_request_counter += 1
+                call_id = n8n_request_counter
+
+            data = await request.json()
+        
+            # --- START FIX: n8n expressions and structure cleanup ---
+            if "parameters" in data and isinstance(data["parameters"], list):
+                flat_data = {}
+                for item in data["parameters"]:
+                    if isinstance(item, dict) and "name" in item and "value" in item:
+                        flat_data[item["name"]] = item["value"]
+                data = flat_data
+
+            cleaned_data = {}
+            for k, v in data.items():
+                clean_k = k.lstrip("=") if isinstance(k, str) else k
+                clean_v = v.lstrip("=") if isinstance(v, str) else v
+                if clean_k in ["video_length", "num_inference_steps"] and isinstance(clean_v, str) and clean_v.isdigit():
+                    clean_v = int(clean_v)
+                cleaned_data[clean_k] = clean_v
+            data = cleaned_data
+            # --- END FIX ---
+
+            # Log received keys + image parameter values for debugging
+            image_prompt_type_raw = data.get("image_prompt_type", "")
+            print(f"[n8n API] [Call {call_id}] Received request data: {list(data.keys())}")
+            print(f"[n8n API] [Call {call_id}] image_prompt_type='{image_prompt_type_raw}' | image_start='{str(data.get('image_start', 'MISSING'))[:80]}' | image_end='{str(data.get('image_end', 'MISSING'))[:80]}'")
+        
+            request_id = data.get("request_id")
+            use_cache = request_id is not None and len(str(request_id).strip()) > 0
+            if not use_cache:
+                 import uuid
+                 request_id = str(uuid.uuid4())
+                 print(f"[n8n API] [Call {call_id}] No request_id provided. Generating fresh (no cache): {request_id}")
+            else:
+                 print(f"[n8n API] [Call {call_id}] Processing request_id (with cache): {request_id}")
+
+            current_time = time.time()
+            wait_event = None
+        
+            with api_jobs_lock:
+                 to_del = [k for k, v in api_jobs.items() if current_time - v['timestamp'] > 1800]
+                 for k in to_del:
+                     del api_jobs[k]
+                     print(f"[n8n API] [Call {call_id}] Cleaned up expired job: {k}")
+
+                 if request_id in api_jobs:
+                     job = api_jobs[request_id]
+                     if job['status'] == 'completed':
+                         print(f"[n8n API] [Call {call_id}] Returning CACHED result for {request_id}")
+                         return {"url": job['result']}
+                     elif job['status'] == 'failed':
+                          print(f"[n8n API] [Call {call_id}] Returning PREVIOUS FAILURE for {request_id}")
+                          return JSONResponse(status_code=500, content={"error": job.get('error', 'Previous attempt failed')})
+                     else:
+                          print(f"[n8n API] [Call {call_id}] Job {request_id} is already RUNNING. Waiting for completion...")
+                          wait_event = job['event']
+                 else:
+                      print(f"[n8n API] [Call {call_id}] Registering NEW job for {request_id}")
+                      api_jobs[request_id] = {
+                          'status': 'running',
+                          'timestamp': current_time,
+                          'event': asyncio.Event(),
+                          'result': None,
+                          'error': None
+                      }
+        
+            if wait_event:
+                print(f"[n8n API] [Call {call_id}] Suspending request to wait for {request_id}...")
+                await wait_event.wait()
+                print(f"[n8n API] [Call {call_id}] Resumed! Fetching result for {request_id}")
+                with api_jobs_lock:
+                    job = api_jobs.get(request_id)
+                    if job and job['status'] == 'completed':
+                        return {"url": job['result']}
+                    else:
+                        err = job.get('error', 'Job failed or disappeared') if job else 'Job disappeared'
+                        return JSONResponse(status_code=500, content={"error": err})
+        
+            # S3/MinIO gateways reject the default "Python-urllib/3.x" User-Agent on
+            # presigned URLs (HTTP 403), so every fetched asset must send a real one.
+            n8n_fetch_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
+
+            async def process_n8n_file(file_input, label="asset"):
+                if not file_input: return None
+                if isinstance(file_input, list):
+                    fetched = []
+                    for entry in file_input:
+                        resolved = await process_n8n_file(entry, label)
+                        if resolved is not None:
+                            fetched.append(resolved)
+                    return fetched
+                if isinstance(file_input, str) and (file_input.startswith("http") or len(file_input) > 255):
+                    if file_input.startswith("http"):
+                         import urllib.request
+                         import tempfile
+                         ext = os.path.splitext(file_input.split("?")[0])[1] or ".tmp"
+                         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
+                         try:
+                             request = urllib.request.Request(file_input, headers=n8n_fetch_headers)
+                             with urllib.request.urlopen(request, timeout=120) as response:
+                                 payload = response.read()
+                             with open(temp_file.name, "wb") as handle:
+                                 handle.write(payload)
+                             print(f"[n8n API] [{call_id}] fetched {label} ({len(payload)} bytes) from {file_input.split('?')[0]}")
+                             return temp_file.name
+                         except Exception as e:
+                             # A dead or forbidden reference must not abort a paid generation.
+                             print(f"[n8n API] [{call_id}] WARNING: could not fetch {label} '{file_input[:120]}' -> {e}. Skipping it.")
+                             return None
+                return file_input
+
+            prompt = data.get("prompt", "")
+            if isinstance(prompt, dict):
+                print(f"[n8n API] [Call {call_id}] WARNING: 'prompt' is a dict object, extracting prompt string from it")
+                prompt = prompt.get("prompt", prompt.get("text", str(prompt)))
+            if not prompt and "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
+                 prompt = data["data"][0]
+            if not isinstance(prompt, str):
+                prompt = str(prompt) 
+
+            raw_image_start = data.get("image_start") or data.get("start_image") or data.get("first_frame_url")
+            raw_image_end = data.get("image_end") or data.get("end_image") or data.get("last_frame_url")
+
+            image_refs = await process_n8n_file(data.get("image_refs"), "image_ref")
+            video_source = await process_n8n_file(data.get("video_source"), "video_source")
+            image_start = await process_n8n_file(raw_image_start, "image_start")
+            image_end = await process_n8n_file(raw_image_end, "image_end")
+            audio_guide = await process_n8n_file(data.get("audio_guide"), "audio_guide")
+            audio_guide2 = await process_n8n_file(data.get("audio_guide2"), "audio_guide2")
+
+            ref_count = len(image_refs) if isinstance(image_refs, list) else (1 if image_refs else 0)
+            requested_ref_count = len(data.get("image_refs") or []) if isinstance(data.get("image_refs"), list) else ref_count
+            print(f"[n8n API] [Call {call_id}] After file processing: image_refs={ref_count}/{requested_ref_count} usable | video_prompt_type='{data.get('video_prompt_type', '')}' | image_start={'<PIL/path>' if image_start else 'None'} | image_end={'<PIL/path>' if image_end else 'None'}")
+
+            dummy_state = {} 
+            from fastapi.concurrency import run_in_threadpool
+        
+            try:
+                result_url = await run_in_threadpool(
+                    n8n_generate_api,
+                    prompt=prompt,
+                    model_type=data.get("model_type", "Wan2.1-T2V-1.3B"),
+                    resolution=data.get("resolution", "832x480"),
+                    video_length=data.get("video_length", 81),
+                    num_inference_steps=data.get("num_inference_steps", 20),
+                    state=dummy_state,
+                    image_refs=image_refs,
+                    video_source=video_source,
+                    image_start=image_start,
+                    image_end=image_end,
+                    audio_guide=audio_guide,
+                    audio_guide2=audio_guide2,
+                    alt_prompt=data.get("alt_prompt", ""),
+                    image_prompt_type=data.get("image_prompt_type", "Image Prompt"),
+                    video_prompt_type=data.get("video_prompt_type", "Video Prompt"),
+                    audio_prompt_type=data.get("audio_prompt_type", ""),
+                    model_mode=data.get("model_mode"),
+                    custom_settings=data.get("custom_settings"),
+                    spatial_upsampler_parameters=data.get("spatial_upsampler_parameters"),
+                    spatial_upsampler_param=data.get("spatial_upsampler_param"),
+                    spatial_upsampler_param2=data.get("spatial_upsampler_param2")
+                )
+            
+                with api_jobs_lock:
+                    if request_id in api_jobs:
+                        api_jobs[request_id]['status'] = 'completed'
+                        api_jobs[request_id]['result'] = result_url
+                        api_jobs[request_id]['event'].set()
+
+                if "Generation failed" in result_url or "Error:" in result_url:
+                     return JSONResponse(status_code=500, content={"error": result_url})
+            
+                return {"url": result_url}
+
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                with api_jobs_lock:
+                    if request_id in api_jobs:
+                        api_jobs[request_id]['status'] = 'failed'
+                        api_jobs[request_id]['error'] = str(e)
+                        api_jobs[request_id]['event'].set()
+                return JSONResponse(status_code=500, content={"error": str(e)})
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 def create_ui():
@@ -15146,231 +15386,6 @@ if __name__ == "__main__":
         else:
             url = "http://" + server_name
         webbrowser.open(url + ":" + str(server_port), new = 0, autoraise = True)
-    outputs_dir = os.path.join(os.getcwd(), "outputs")
-    os.makedirs(outputs_dir, exist_ok=True)
-
-    def mount_n8n_and_outputs(app):
-        from fastapi.staticfiles import StaticFiles
-        try:
-            app.mount("/outputs", StaticFiles(directory=outputs_dir), name="outputs")
-            print("[n8n API] Successfully mounted /outputs")
-        except Exception as e:
-            print(f"[n8n API] Notice mounting /outputs: {e}")
-
-        @app.get("/n8n/models")
-        async def n8n_models_endpoint():
-            try:
-                models_list = []
-                for model_type, model_def in models_def.items():
-                    if model_def.get("visible", True):
-                        models_list.append({
-                            "id": model_type,
-                            "name": model_def.get("name", model_type),
-                            "family": model_def.get("group", "unknown"),
-                            "resolution": model_def.get("resolution", "unknown")
-                        })
-                models_list.sort(key=lambda x: x["name"])
-                return {"models": models_list}
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                return JSONResponse(status_code=500, content={"error": str(e)})
-
-        @app.post("/n8n/sync")
-        async def n8n_sync_endpoint(request: Request):
-            global n8n_request_counter
-            try:
-                with api_jobs_lock:
-                    n8n_request_counter += 1
-                    call_id = n8n_request_counter
-
-                data = await request.json()
-            
-                # --- START FIX: n8n expressions and structure cleanup ---
-                if "parameters" in data and isinstance(data["parameters"], list):
-                    flat_data = {}
-                    for item in data["parameters"]:
-                        if isinstance(item, dict) and "name" in item and "value" in item:
-                            flat_data[item["name"]] = item["value"]
-                    data = flat_data
-
-                cleaned_data = {}
-                for k, v in data.items():
-                    clean_k = k.lstrip("=") if isinstance(k, str) else k
-                    clean_v = v.lstrip("=") if isinstance(v, str) else v
-                    if clean_k in ["video_length", "num_inference_steps"] and isinstance(clean_v, str) and clean_v.isdigit():
-                        clean_v = int(clean_v)
-                    cleaned_data[clean_k] = clean_v
-                data = cleaned_data
-                # --- END FIX ---
-
-                # Log received keys + image parameter values for debugging
-                image_prompt_type_raw = data.get("image_prompt_type", "")
-                print(f"[n8n API] [Call {call_id}] Received request data: {list(data.keys())}")
-                print(f"[n8n API] [Call {call_id}] image_prompt_type='{image_prompt_type_raw}' | image_start='{str(data.get('image_start', 'MISSING'))[:80]}' | image_end='{str(data.get('image_end', 'MISSING'))[:80]}'")
-            
-                request_id = data.get("request_id")
-                use_cache = request_id is not None and len(str(request_id).strip()) > 0
-                if not use_cache:
-                     import uuid
-                     request_id = str(uuid.uuid4())
-                     print(f"[n8n API] [Call {call_id}] No request_id provided. Generating fresh (no cache): {request_id}")
-                else:
-                     print(f"[n8n API] [Call {call_id}] Processing request_id (with cache): {request_id}")
-
-                current_time = time.time()
-                wait_event = None
-            
-                with api_jobs_lock:
-                     to_del = [k for k, v in api_jobs.items() if current_time - v['timestamp'] > 1800]
-                     for k in to_del:
-                         del api_jobs[k]
-                         print(f"[n8n API] [Call {call_id}] Cleaned up expired job: {k}")
-
-                     if request_id in api_jobs:
-                         job = api_jobs[request_id]
-                         if job['status'] == 'completed':
-                             print(f"[n8n API] [Call {call_id}] Returning CACHED result for {request_id}")
-                             return {"url": job['result']}
-                         elif job['status'] == 'failed':
-                              print(f"[n8n API] [Call {call_id}] Returning PREVIOUS FAILURE for {request_id}")
-                              return JSONResponse(status_code=500, content={"error": job.get('error', 'Previous attempt failed')})
-                         else:
-                              print(f"[n8n API] [Call {call_id}] Job {request_id} is already RUNNING. Waiting for completion...")
-                              wait_event = job['event']
-                     else:
-                          print(f"[n8n API] [Call {call_id}] Registering NEW job for {request_id}")
-                          api_jobs[request_id] = {
-                              'status': 'running',
-                              'timestamp': current_time,
-                              'event': asyncio.Event(),
-                              'result': None,
-                              'error': None
-                          }
-            
-                if wait_event:
-                    print(f"[n8n API] [Call {call_id}] Suspending request to wait for {request_id}...")
-                    await wait_event.wait()
-                    print(f"[n8n API] [Call {call_id}] Resumed! Fetching result for {request_id}")
-                    with api_jobs_lock:
-                        job = api_jobs.get(request_id)
-                        if job and job['status'] == 'completed':
-                            return {"url": job['result']}
-                        else:
-                            err = job.get('error', 'Job failed or disappeared') if job else 'Job disappeared'
-                            return JSONResponse(status_code=500, content={"error": err})
-            
-                # S3/MinIO gateways reject the default "Python-urllib/3.x" User-Agent on
-                # presigned URLs (HTTP 403), so every fetched asset must send a real one.
-                n8n_fetch_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
-
-                async def process_n8n_file(file_input, label="asset"):
-                    if not file_input: return None
-                    if isinstance(file_input, list):
-                        fetched = []
-                        for entry in file_input:
-                            resolved = await process_n8n_file(entry, label)
-                            if resolved is not None:
-                                fetched.append(resolved)
-                        return fetched
-                    if isinstance(file_input, str) and (file_input.startswith("http") or len(file_input) > 255):
-                        if file_input.startswith("http"):
-                             import urllib.request
-                             import tempfile
-                             ext = os.path.splitext(file_input.split("?")[0])[1] or ".tmp"
-                             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
-                             try:
-                                 request = urllib.request.Request(file_input, headers=n8n_fetch_headers)
-                                 with urllib.request.urlopen(request, timeout=120) as response:
-                                     payload = response.read()
-                                 with open(temp_file.name, "wb") as handle:
-                                     handle.write(payload)
-                                 print(f"[n8n API] [{call_id}] fetched {label} ({len(payload)} bytes) from {file_input.split('?')[0]}")
-                                 return temp_file.name
-                             except Exception as e:
-                                 # A dead or forbidden reference must not abort a paid generation.
-                                 print(f"[n8n API] [{call_id}] WARNING: could not fetch {label} '{file_input[:120]}' -> {e}. Skipping it.")
-                                 return None
-                    return file_input
-
-                prompt = data.get("prompt", "")
-                if isinstance(prompt, dict):
-                    print(f"[n8n API] [Call {call_id}] WARNING: 'prompt' is a dict object, extracting prompt string from it")
-                    prompt = prompt.get("prompt", prompt.get("text", str(prompt)))
-                if not prompt and "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
-                     prompt = data["data"][0]
-                if not isinstance(prompt, str):
-                    prompt = str(prompt) 
-
-                raw_image_start = data.get("image_start") or data.get("start_image") or data.get("first_frame_url")
-                raw_image_end = data.get("image_end") or data.get("end_image") or data.get("last_frame_url")
-
-                image_refs = await process_n8n_file(data.get("image_refs"), "image_ref")
-                video_source = await process_n8n_file(data.get("video_source"), "video_source")
-                image_start = await process_n8n_file(raw_image_start, "image_start")
-                image_end = await process_n8n_file(raw_image_end, "image_end")
-                audio_guide = await process_n8n_file(data.get("audio_guide"), "audio_guide")
-                audio_guide2 = await process_n8n_file(data.get("audio_guide2"), "audio_guide2")
-
-                ref_count = len(image_refs) if isinstance(image_refs, list) else (1 if image_refs else 0)
-                requested_ref_count = len(data.get("image_refs") or []) if isinstance(data.get("image_refs"), list) else ref_count
-                print(f"[n8n API] [Call {call_id}] After file processing: image_refs={ref_count}/{requested_ref_count} usable | video_prompt_type='{data.get('video_prompt_type', '')}' | image_start={'<PIL/path>' if image_start else 'None'} | image_end={'<PIL/path>' if image_end else 'None'}")
-
-                dummy_state = {} 
-                from fastapi.concurrency import run_in_threadpool
-            
-                try:
-                    result_url = await run_in_threadpool(
-                        n8n_generate_api,
-                        prompt=prompt,
-                        model_type=data.get("model_type", "Wan2.1-T2V-1.3B"),
-                        resolution=data.get("resolution", "832x480"),
-                        video_length=data.get("video_length", 81),
-                        num_inference_steps=data.get("num_inference_steps", 20),
-                        state=dummy_state,
-                        image_refs=image_refs,
-                        video_source=video_source,
-                        image_start=image_start,
-                        image_end=image_end,
-                        audio_guide=audio_guide,
-                        audio_guide2=audio_guide2,
-                        alt_prompt=data.get("alt_prompt", ""),
-                        image_prompt_type=data.get("image_prompt_type", "Image Prompt"),
-                        video_prompt_type=data.get("video_prompt_type", "Video Prompt"),
-                        audio_prompt_type=data.get("audio_prompt_type", ""),
-                        model_mode=data.get("model_mode"),
-                        custom_settings=data.get("custom_settings"),
-                        spatial_upsampler_parameters=data.get("spatial_upsampler_parameters"),
-                        spatial_upsampler_param=data.get("spatial_upsampler_param"),
-                        spatial_upsampler_param2=data.get("spatial_upsampler_param2")
-                    )
-                
-                    with api_jobs_lock:
-                        if request_id in api_jobs:
-                            api_jobs[request_id]['status'] = 'completed'
-                            api_jobs[request_id]['result'] = result_url
-                            api_jobs[request_id]['event'].set()
-
-                    if "Generation failed" in result_url or "Error:" in result_url:
-                         return JSONResponse(status_code=500, content={"error": result_url})
-                
-                    return {"url": result_url}
-
-                except Exception as e:
-                    import traceback
-                    traceback.print_exc()
-                    with api_jobs_lock:
-                        if request_id in api_jobs:
-                            api_jobs[request_id]['status'] = 'failed'
-                            api_jobs[request_id]['error'] = str(e)
-                            api_jobs[request_id]['event'].set()
-                    return JSONResponse(status_code=500, content={"error": str(e)})
-
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                return JSONResponse(status_code=500, content={"error": str(e)})
-
     demo.custom_mount = mount_n8n_and_outputs
 
     from shared.deepy.hybrid import launch_gradio
