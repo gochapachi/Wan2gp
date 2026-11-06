@@ -274,12 +274,20 @@ def _label_low_integrity(path: Path) -> bool:
     Setting a label needs Write-Owner on the folder; drives whose inherited ACL only grants Modify refuse it, so the owner (this process
     created the folder) first grants itself full control. False, with a console warning, when the label cannot be set: the worker then
     runs with a normal token and only the interpreter's own guards bound its writes."""
-    import ntsecuritycon
-    import pywintypes
-    import win32api
-    import win32con
-    import win32security
-    from tqdm import tqdm
+    try:
+        import ntsecuritycon
+        import pywintypes
+        import win32api
+        import win32con
+        import win32security
+        from tqdm import tqdm
+    except (ImportError, ModuleNotFoundError) as err:
+        try:
+            from tqdm import tqdm
+            tqdm.write(f"[Deepy] Python sandbox: pywin32 ({err}) not available; the sandbox runs without the OS write barrier.")
+        except Exception:
+            pass
+        return False
 
     sacl = win32security.ACL()
     sacl.AddMandatoryAce(win32security.ACL_REVISION_DS, win32con.OBJECT_INHERIT_ACE | win32con.CONTAINER_INHERIT_ACE, 0x1, win32security.ConvertStringSidToSid("S-1-16-4096"))  # SYSTEM_MANDATORY_LABEL_NO_WRITE_UP
