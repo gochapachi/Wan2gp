@@ -253,7 +253,10 @@ class AgentWorkspaces:
                 proxy.__signature__ = signature.replace(parameters=[*signature.parameters.values(), inspect.Parameter('agent_context', inspect.Parameter.KEYWORD_ONLY, default=None, annotation=str | None)])
                 proxy.__name__ = name
                 return proxy
-            self.server._tool_manager.remove_tool(name)
+            if hasattr(self.server._tool_manager, "remove_tool"):
+                self.server._tool_manager.remove_tool(name)
+            elif hasattr(self.server._tool_manager, "_tools"):
+                self.server._tool_manager._tools.pop(name, None)
             self.server.add_tool(make_proxy(name, tool), name=name, description=tool.description + ' Optional agent_context resumes an assigned workspace; obtain it with wangp_workspace. Shared-user workspace and queue permissions apply.')
             proxy_tool = self.server._tool_manager.get_tool(name)
             proxy_tool.parameters = {**tool.parameters, 'properties': {**tool.parameters['properties'], 'agent_context': {'type': 'string', 'description': 'Context returned by wangp_workspace; reuse after reconnecting or for separate logical agents.'}}}

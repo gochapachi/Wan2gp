@@ -3,7 +3,6 @@
 Deepy Prime and Deepy Python scripts alike. Discovery is progressive: one summary line per plugin in the tool description, the actions of one
 plugin with their call signatures, an action's contract, then execution. Routing sentences declared on actions join the agents' instructions
 and the discovery of the WanGP tool an action competes with; a plugin's toolbox skills are named by its discovery."""
-from __future__ import annotations
 
 import copy
 import difflib
