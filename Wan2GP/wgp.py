@@ -14330,7 +14330,7 @@ def get_js():
     return start_quit_timer_js, cancel_quit_timer_js, trigger_zip_download_js, trigger_settings_download_js, click_brush_js
 
 def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480", video_length=81, num_inference_steps=20, state=None,
-                    image_refs=None, video_source=None, image_start=None, image_end=None,
+                    image_refs=None, video_source=None, image_start=None, image_end=None, video_guide=None,
                     audio_guide=None, audio_guide2=None, alt_prompt="", image_prompt_type="Image Prompt",
                     video_prompt_type="Video Prompt", audio_prompt_type="",
                     model_mode=None, custom_settings=None, spatial_upsampler_parameters=None,
@@ -14406,10 +14406,11 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
     }
     
     # 4. Prepare parameters for generate_media
-    fps = 16 
+    # Match the selected model's temporal and audio conditioning rate.
+    fps = int(model_def.get("fps", 16))
     duration_seconds = int(video_length) / fps
     
-    ui_defaults = {}
+    ui_defaults = get_default_settings(model_type)
     base_model_type = get_base_model_type(model_type)
     model_handler = get_model_handler(base_model_type)
     if hasattr(model_handler, "update_default_settings"):
@@ -14519,7 +14520,7 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
             "sample_solver": ui_defaults.get("sample_solver", "unipc"), 
             "embedded_guidance_scale": 1.0,
             "repeat_generation": 1,
-            "multi_prompts_gen_type": "Random",
+            "multi_prompts_gen_type": "FG" if model_def.get("audio_only", False) else "Random",
             "multi_images_gen_type": "Random",
             "skip_steps_cache_type": "",
             "skip_steps_multiplier": 1.0,
@@ -14536,10 +14537,10 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
             "video_prompt_type": video_prompt_type,
             "image_refs": image_refs if image_refs else [],
             "frames_positions": [],
-            "video_guide": None,
+            "video_guide": video_guide,
             "video_guide2": None,
             "image_guide": None,
-            "keep_frames_video_guide": "0",
+            "keep_frames_video_guide": "" if video_guide else "0",
             "denoising_strength": ui_defaults.get("denoising_strength", 0.75),
             "masking_strength": ui_defaults.get("masking_strength", 1.0),
             "video_guide_outpainting": "",
@@ -14568,7 +14569,7 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
             "sliding_window_overlap_noise": 0.0,
             "sliding_window_discard_last_frames": 0,
             "sliding_window_trim_first_frames": 0,
-            "image_refs_relative_size": 1.0,
+            "image_refs_relative_size": ui_defaults.get("image_refs_relative_size", 100.0),
             "remove_background_images_ref": False,
             "temporal_upsampling": "",
             "spatial_upsampling": "",
@@ -14598,9 +14599,9 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
             "override_profile": -1,
             "override_attention": "",
             "attention_sparsity": ui_defaults.get("attention_sparsity", 0.0),
-            "temperature": 1.0,
+            "temperature": ui_defaults.get("temperature", 0.8),
             "custom_settings": custom_settings if custom_settings is not None else ui_defaults.get("custom_settings", None),
-            "top_p": 1.0,
+            "top_p": ui_defaults.get("top_p", 0.9),
             "top_k": 50,
             "self_refiner_setting": 0,
             "self_refiner_plan": "",
@@ -14614,6 +14615,9 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
             "plugin_data": {},
             "spatial_upsampler_parameters": spatial_upsampler_parameters,
         }
+        # Keep model-specific flags and all newer required settings from WanGP's defaults.
+        for setting_name, setting_value in ui_defaults.items():
+            gen_params.setdefault(setting_name, setting_value)
         import inspect
         sig_params = inspect.signature(generate_media).parameters
         has_var_keyword = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig_params.values())
@@ -14640,6 +14644,20 @@ def n8n_generate_api(prompt, model_type="Wan2.1-T2V-1.3B", resolution="832x480",
             elif len(state["gen"]["audio_file_list"]) > 0:
                 output_filename = state["gen"]["audio_file_list"][-1]
             
+            if model_type == "chatterbox" and model_mode == "en" and len(prompt) <= 300:
+                # Short business narration must match its script before it reaches a workflow.
+                import subprocess
+                import sys
+                quality = subprocess.run(
+                    [sys.executable, "-X", "utf8", os.path.join(os.path.dirname(__file__), "n8n_speech_quality.py"), output_filename, prompt],
+                    capture_output=True, text=True, encoding="utf-8", timeout=180,
+                )
+                if quality.returncode != 0:
+                    raise RuntimeError("Narration verification failed: " + quality.stderr[-1500:])
+                quality_report = json.loads(quality.stdout.strip().splitlines()[-1])
+                output_filename = quality_report["output"]
+                print(f"[n8n API] Verified narration: {quality_report['selected']} (match={quality_report['match_score']})")
+
             # Create a clean copy for serving to avoid URL encoding and proxy issues
             ext = os.path.splitext(output_filename)[1]
             clean_filename = f"wan_{int(time.time())}_{random.randint(1000,9999)}{ext}"
@@ -14769,7 +14787,7 @@ def mount_n8n_and_outputs(app):
             wait_event = None
         
             with api_jobs_lock:
-                 to_del = [k for k, v in api_jobs.items() if current_time - v['timestamp'] > 1800]
+                 to_del = [k for k, v in api_jobs.items() if current_time - v['timestamp'] > (86400 if v.get('status') == 'running' else 1800)]
                  for k in to_del:
                      del api_jobs[k]
                      print(f"[n8n API] [Call {call_id}] Cleaned up expired job: {k}")
@@ -14827,9 +14845,13 @@ def mount_n8n_and_outputs(app):
                          ext = os.path.splitext(file_input.split("?")[0])[1] or ".tmp"
                          temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
                          try:
-                             request = urllib.request.Request(file_input, headers=n8n_fetch_headers)
-                             with urllib.request.urlopen(request, timeout=120) as response:
-                                 payload = response.read()
+                             def fetch_asset_bytes():
+                                 request = urllib.request.Request(file_input, headers=n8n_fetch_headers)
+                                 with urllib.request.urlopen(request, timeout=120) as response:
+                                     return response.read()
+                             # A reference can point back to this app's /outputs route.
+                             # Keep its event loop free to serve that file while fetching.
+                             payload = await asyncio.to_thread(fetch_asset_bytes)
                              with open(temp_file.name, "wb") as handle:
                                  handle.write(payload)
                              print(f"[n8n API] [{call_id}] fetched {label} ({len(payload)} bytes) from {file_input.split('?')[0]}")
@@ -14854,6 +14876,7 @@ def mount_n8n_and_outputs(app):
 
             image_refs = await process_n8n_file(data.get("image_refs"), "image_ref")
             video_source = await process_n8n_file(data.get("video_source"), "video_source")
+            video_guide = await process_n8n_file(data.get("video_guide"), "video_guide")
             image_start = await process_n8n_file(raw_image_start, "image_start")
             image_end = await process_n8n_file(raw_image_end, "image_end")
             audio_guide = await process_n8n_file(data.get("audio_guide"), "audio_guide")
@@ -14867,6 +14890,18 @@ def mount_n8n_and_outputs(app):
             from fastapi.concurrency import run_in_threadpool
         
             try:
+                if requested_ref_count and ref_count != requested_ref_count:
+                    raise ValueError("One or more required reference images could not be fetched")
+                if data.get("video_guide") and not video_guide:
+                    raise ValueError("The required reference video could not be fetched")
+                if data.get('model_type') == 'minimax_h3_fasth3_omni' and 'S' in str(data.get('image_prompt_type') or '') and not image_start:
+                    raise ValueError('The required start image could not be fetched')
+                if data.get('model_type') == 'minimax_h3_fasth3_omni' and 'E' in str(data.get('image_prompt_type') or '') and not image_end:
+                    raise ValueError('The required end image could not be fetched')
+                if data.get('model_type') == 'minimax_h3_fasth3_omni' and 'A' in str(data.get('audio_prompt_type') or '').upper() and not audio_guide:
+                    raise ValueError('The required audio reference could not be fetched')
+                if data.get('model_type') == 'minimax_h3_fasth3_omni' and 'B' in str(data.get('audio_prompt_type') or '').upper() and not audio_guide2:
+                    raise ValueError('The required second audio reference could not be fetched')
                 result_url = await run_in_threadpool(
                     n8n_generate_api,
                     prompt=prompt,
@@ -14877,6 +14912,7 @@ def mount_n8n_and_outputs(app):
                     state=dummy_state,
                     image_refs=image_refs,
                     video_source=video_source,
+                    video_guide=video_guide,
                     image_start=image_start,
                     image_end=image_end,
                     audio_guide=audio_guide,
@@ -14892,14 +14928,15 @@ def mount_n8n_and_outputs(app):
                     spatial_upsampler_param2=data.get("spatial_upsampler_param2")
                 )
             
+                if not isinstance(result_url, str) or not result_url or "Generation failed" in result_url or "Error:" in result_url:
+                    raise ValueError(str(result_url or "Generation failed without a result"))
+
                 with api_jobs_lock:
                     if request_id in api_jobs:
                         api_jobs[request_id]['status'] = 'completed'
+                        api_jobs[request_id]['timestamp'] = time.time()
                         api_jobs[request_id]['result'] = result_url
                         api_jobs[request_id]['event'].set()
-
-                if "Generation failed" in result_url or "Error:" in result_url:
-                     return JSONResponse(status_code=500, content={"error": result_url})
             
                 return {"url": result_url}
 
@@ -14909,6 +14946,7 @@ def mount_n8n_and_outputs(app):
                 with api_jobs_lock:
                     if request_id in api_jobs:
                         api_jobs[request_id]['status'] = 'failed'
+                        api_jobs[request_id]['timestamp'] = time.time()
                         api_jobs[request_id]['error'] = str(e)
                         api_jobs[request_id]['event'].set()
                 return JSONResponse(status_code=500, content={"error": str(e)})

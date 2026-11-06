@@ -147,7 +147,7 @@ def parse_dialogue_prompt(prompt: str) -> list[DialogueTurn]:
 
 def _natural_duration(turn: DialogueTurn) -> float:
     words = len(_normalize_words(turn.text))
-    punctuation = len(re.findall(r"[.!?;:]", turn.text)) * 0.18
+    punctuation = len(re.findall(r"[.!?;:\u0964\u0965]", turn.text)) * 0.18
     return max(H3_DIALOGUE_MIN_SEGMENT_SECONDS, min(H3_DIALOGUE_MAX_SEGMENT_SECONDS, words / H3_DIALOGUE_WORDS_PER_SECOND + punctuation + 1.4))
 
 
@@ -219,8 +219,17 @@ def load_dialogue_whisper() -> torch.nn.Module:
 
 
 def _normalize_words(text: str) -> list[str]:
-    normalized = unicodedata.normalize("NFKD", str(text or "")).encode("ascii", "ignore").decode().casefold()
-    return re.findall(r"[a-z0-9]+(?:'[a-z0-9]+)?", normalized)
+    normalized = unicodedata.normalize("NFKC", str(text or "")).casefold()
+    words, current = [], []
+    for char in normalized:
+        if unicodedata.category(char)[0] in "LMN" or (char in "'’" and current):
+            current.append(char)
+        elif current:
+            words.append("".join(current).strip("'’"))
+            current = []
+    if current:
+        words.append("".join(current).strip("'’"))
+    return [word for word in words if word]
 
 
 def _fuzzy_match(left: str, right: str) -> bool:
