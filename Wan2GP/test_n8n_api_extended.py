@@ -78,7 +78,15 @@ if __name__ == "__main__":
         with patch('importlib.metadata.version', return_value="3.8.1"), patch('os.remove'):
             spec.loader.exec_module(wgp)
             
+        wgp.args.settings = "settings"
+        wgp.settings_version = 2.83
+        wgp.args.seed = -1
+        wgp.args.frames = 0
+        wgp.args.steps = 0
+        wgp.default_seed = -1
+        wgp.min_settings_version = 0
         wgp.generate_video = mock_generate_video
+        wgp.get_default_settings = lambda model_type: {"settings_version": 2.83, "sample_solver": "unipc", "fps": 16}
         wgp.generate_media = mock_generate_video
         wgp.gr.Error = Exception
         wgp.models_def = {
