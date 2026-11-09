@@ -105,7 +105,7 @@ A **Viggle Remake** recasts the people of an existing video, or changes its obje
 
 **Shots rendered together**, beside your video in the Brief, joins short shots with their neighbours in one render (at least 8 seconds by default): rendered alone, a short shot's lips barely follow the speech or the singing. Each shot still gets its own take. When you render one shot again, its neighbours render with it and each gets a new take beside the one it uses, so nothing you chose changes; the shot's takes say what they were rendered with. Select shots that follow each other to render them together, up to the model's longest render (about 14 seconds): the panel says which shots render together, and **Reshoot N shots** on the toolbar, like **Reshoot them** in the panel, gives each a new take, at the size **Draft** / **Final** says. While shots render, the Showrunner button at the top says which ones and how far they are. Set it to 0, or turn off **Group rendering** on the Board's toolbar, to render every shot alone.
 
-Under **Models**, choose the image editor that paints the frames. Choose a **Draft resolution** of 480p in the Brief for a fast first version: a two-minute video with many cuts takes hours at 720p on one graphics card.
+Under **Models**, the **Frame Painter** paints the frames where people are replaced. Its Auto is Viggle Image Swap, a model made for this: it gives each new person the body of their character sheet, not the original's, and dresses them in the sheet's outfit, so describe the costume you want on their cast card. A moving pose can come out a little stiffer. The **Image Editor** paints the frames of other changes and makes the character sheets. Choose a **Draft resolution** of 480p in the Brief for a fast first version: a two-minute video with many cuts takes hours at 720p on one graphics card.
 
 A shot with nothing to change is not rendered at any size: the edit reads it directly from your video.
 
@@ -172,10 +172,19 @@ is shot (hover to play it), its status and the showrunner's opinion of the take.
   selected with Ctrl or Shift and moved together; Shift selects only the shots the current filter shows.
 - **Lock** a shot (or a cast member) to keep it exactly as it is: the showrunner never changes it.
 - **Exclude** a shot to keep it out of the edit without deleting it: its card stays on the Board with a crossed-out eye, and the **Excluded** filter lists these shots.
-- **Drop media** from your computer onto a shot to use it as a take, or onto the cast to add reference pictures and voices. Media you drop
-  elsewhere, and media the showrunner made outside the shots, wait in the **Media bin** at the bottom: click one to play or view it (in a picture, scroll or use + and − to zoom, hold and drag to
-  move inside it), drag it where you need it. The **×** on an item takes it out of the bin: its file stays in the production's folder, and undo
-  brings it back.
+- **Drop media** from your computer onto a shot to use it as a take, or onto the cast to add reference pictures and voices. A sound dropped
+  on a shot never replaces its picture: it plays over the edit from that shot on, as a track on the Timeline's Sound lane, where you
+  shorten, move or fade it. Media you drop elsewhere, and media the showrunner made outside the shots (a song it composed, for one), wait in the
+  **Media bin** at the bottom: click one to play or view it (in a picture, scroll or use + and − to zoom, hold and drag to move inside it),
+  drag it where you need it. Without a mouse, select a shot and right-click (or long-press) the item instead: a picture or a video becomes a
+  take of that shot, a sound plays from it on. The **×** on an item takes it out of the bin: its file stays in the production's folder, and
+  undo brings it back. A deleted shot leaves its takes in the bin, so a clip you removed can come back later.
+- **Your own clips as shots**: drop a video or a picture on **Add a shot** at the end of the Board, or right-click a bin item → **New shot
+  from it** (after the selected shot): it becomes a shot of its own, named after the file, with the file as its take. It plays in the
+  Timeline and the edit like any other shot, and the showrunner works with it too. A shot without a take also offers **Use my video…** in its
+  panel, beside **Render now**.
+- **Start and end pictures**: a shot whose video starts (or ends) on a picture shows it on its card until it has a take, and in its panel
+  under **Start picture**; click it to look at it closely.
 - **Undo and redo** (Ctrl+Z, Ctrl+Shift+Z) cover every change, yours and the showrunner's, including a new take; a message says what was
   undone.
 
@@ -269,6 +278,7 @@ Showrunner generates with Deepy's templates, in the same categories as Deepy's s
 | --- | --- |
 | **Image Generator** | Stills, illustrated pages and backgrounds. |
 | **Image Editor** | The cast's reference pictures and looks, made from their photos. |
+| **Frame Painter** (remakes, an Image Editor template) | A remake's frames where people are replaced by the cast, painted before the video. |
 | **Video Generator** | Shots without the cast: landscapes, objects, crowds, inserts. |
 | **Video With Speech** | Shots where someone sings or speaks, lip-synced to the song or to their line. |
 | **Video Generator with Ref.** | Shots with the cast, keeping each person's face, hair and outfit from their pictures. |
@@ -280,11 +290,12 @@ Each category lists the same templates as Deepy's settings: the built-in ones an
 a category can do it, **(keeps faces)** marks those that take the cast's pictures and **(lip sync)** those that follow the song or a
 spoken line.
 
-- **Auto** uses the template selected in Deepy's settings for the category; its name is shown next to Auto.
+- **Auto** uses the template selected in Deepy's settings for the category; its name is shown next to Auto. The Frame Painter's Auto is
+  Viggle Image Swap, which replaces people far more reliably than a general image editor.
 - **When a template cannot do what a shot needs**, the showrunner takes the one of another category. For example, when the Video With
   Speech template cannot keep the cast's faces, the singers and speakers of the cast are shot with the Video Generator with Ref.
   template, which follows the song or the line as its soundtrack (when its model can, as MiniMax H3 Ref2VA can).
-- **Your own templates**: save your settings in WanGP's generator, select them in its **Lora / Settings** list, then press **+** next to
+- **Your own templates**: save your settings in WanGP's generator as a preset (the list at its top, beside **Save**), keep it selected, then press **+** next to
   the category in **Ask Deepy > Settings**. The template then appears in Showrunner's lists. A template you picked in Showrunner stays
   available there even after Deepy's settings move to another one.
 - **The brief's Models** sets the template of each category for this production. Picking a template applies it to the shots of that
@@ -293,6 +304,22 @@ spoken line.
   as Default models does, under their categories, and marks the brief's choice.
 - **Default models**, at the top of every page, sets what new productions start with. A production keeps its own choices once created;
   change them in its brief.
+
+### Your prompt rules for a model
+
+The notes button beside each list (in the brief's Models, in Default models and next to **Model** in the shot panel) holds your rules for
+the prompts the showrunner writes with that template; for **Auto**, the template Auto stands for. The showrunner follows them in every prompt
+it writes with the template, in all your productions: shots, pictures, songs or voices, depending on the category. The button is lit when a
+template has rules.
+
+- **What to write**: what the model needs that the showrunner may not know, the words to use or avoid, a style to keep, or the trigger word
+  of a LoRA in your template. For example: "One action per shot, in the present tense. No text or logos on screen."
+- **They are instructions**: the showrunner follows them as it writes, which is not a guarantee. What you ask it in the conversation comes
+  first.
+- **Per template**: two templates of the same model have their own rules, so a template with a style LoRA can carry its trigger word. The
+  rules stay on this computer with your Showrunner settings: an exported production does not take them along, and a template you rename
+  in WanGP's presets needs its rules again.
+- **Leave the box empty** to remove a template's rules. The showrunner uses changed rules from its next task.
 
 ## Talking to the Showrunner
 
@@ -446,6 +473,10 @@ after changing it). A production's media also appear in WanGP's gallery under a 
 To tidy the home page, point at a production and click **Archive**: it leaves the grid for the folded **Archived** list at the bottom of the
 page, with everything kept, and its **Bring back** button returns it. **Delete** moves the production's folder to the `.trash` folder of
 the productions root, from where it can still be restored by hand.
+
+To keep a production or move it to another WanGP, open its **…** menu on the home page and choose **Export as .zip**: one file with its
+shots, takes, media, versions and exports. **Import a .zip…** above your productions opens such a file as a new production, here or in
+another installation. Like a duplicate, the copy starts with a fresh showrunner: its conversation and undo history stay with the original.
 
 ---
 
